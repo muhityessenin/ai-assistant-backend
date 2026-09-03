@@ -28,7 +28,7 @@ services:
     restart: unless-stopped
     env_file: [.env]
     ports:
-      - "${APP_PORT:-18473}:${APP_PORT:-18473}"
+      - "127.0.0.1:${APP_PORT:-18473}:${APP_PORT:-18473}"
     volumes:
       - ai-platform-uploads:/app/data/uploads
     networks: [ai-platform-network]
