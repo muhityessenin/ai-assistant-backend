@@ -1,0 +1,953 @@
+Detected database owner email: owner@example.com
+Database owner password: 
+
+[01] GET /health
+{
+  "data": {
+    "status": "ok"
+  },
+  "meta": {}
+}
+
+[02] GET /ready
+{
+  "data": {
+    "migration_version": 1,
+    "status": "ready"
+  },
+  "meta": {}
+}
+
+[03] GET /docs
+HTTP 200, bytes=     503
+
+[04] GET /openapi.yaml
+HTTP 200, OpenAPI found
+
+[05] POST /auth/register — safe validation test (does not create an organization)
+{
+  "error": {
+    "code": "INVALID_JSON",
+    "details": {
+      "reason": "unexpected EOF"
+    },
+    "message": "Invalid request body"
+  }
+}
+
+[06] POST /auth/login — owner
+{
+  "data": {
+    "tokens": "<redacted>",
+    "user": {
+      "user_id": "5ae7d02b-0438-48c7-a6a4-c65b6410a721",
+      "organization_id": "97ff8cf0-d870-4609-ae46-e287f362a96b",
+      "email": "owner@example.com",
+      "name": "Owner",
+      "role": "owner"
+    }
+  },
+  "meta": {}
+}
+
+[07] GET /me — owner
+{
+  "data": {
+    "user_id": "5ae7d02b-0438-48c7-a6a4-c65b6410a721",
+    "organization_id": "97ff8cf0-d870-4609-ae46-e287f362a96b",
+    "email": "owner@example.com",
+    "name": "Owner",
+    "role": "owner"
+  },
+  "meta": {}
+}
+
+[08] GET /me without token — expected 401
+{
+  "error": {
+    "code": "UNAUTHORIZED",
+    "details": {},
+    "message": "Authentication required"
+  }
+}
+
+[09] POST /auth/refresh — rotate owner tokens
+{
+  "data": {
+    "access_token": "<redacted>",
+    "refresh_token": "<redacted>",
+    "token_type": "<redacted>",
+    "expires_in": 900
+  },
+  "meta": {}
+}
+
+[10] POST /users/ — create employee
+{
+  "data": {
+    "id": "aa810408-a8d9-4acd-a77b-6d9bd73e70de",
+    "email": "smoke-1788294261-11007@example.com",
+    "name": "Smoke Employee 1788294261-11007",
+    "status": "active",
+    "role": "employee",
+    "created_at": "2026-09-01T20:24:27.712858Z",
+    "updated_at": "2026-09-01T20:24:27.712858Z"
+  },
+  "meta": {}
+}
+
+[11] GET /users/ — pagination and search
+{
+  "data": [
+    {
+      "id": "aa810408-a8d9-4acd-a77b-6d9bd73e70de",
+      "email": "smoke-1788294261-11007@example.com",
+      "name": "Smoke Employee 1788294261-11007",
+      "status": "active",
+      "role": "employee",
+      "created_at": "2026-09-01T20:24:27.712858Z",
+      "updated_at": "2026-09-01T20:24:27.712858Z"
+    }
+  ],
+  "meta": {
+    "limit": 20,
+    "page": 1,
+    "total": 1
+  }
+}
+
+[12] GET /users/{id}
+{
+  "data": {
+    "id": "aa810408-a8d9-4acd-a77b-6d9bd73e70de",
+    "email": "smoke-1788294261-11007@example.com",
+    "name": "Smoke Employee 1788294261-11007",
+    "status": "active",
+    "role": "employee",
+    "created_at": "2026-09-01T20:24:27.712858Z",
+    "updated_at": "2026-09-01T20:24:27.712858Z"
+  },
+  "meta": {}
+}
+
+[13] PATCH /users/{id}
+{
+  "data": {
+    "id": "aa810408-a8d9-4acd-a77b-6d9bd73e70de",
+    "email": "smoke-1788294261-11007@example.com",
+    "name": "Updated Employee 1788294261-11007",
+    "status": "active",
+    "role": "employee",
+    "created_at": "2026-09-01T20:24:27.712858Z",
+    "updated_at": "2026-09-01T20:24:27.811174Z"
+  },
+  "meta": {}
+}
+
+[14] POST /auth/login — employee
+{
+  "data": {
+    "tokens": "<redacted>",
+    "user": {
+      "user_id": "aa810408-a8d9-4acd-a77b-6d9bd73e70de",
+      "organization_id": "97ff8cf0-d870-4609-ae46-e287f362a96b",
+      "email": "smoke-1788294261-11007@example.com",
+      "name": "Updated Employee 1788294261-11007",
+      "role": "employee"
+    }
+  },
+  "meta": {}
+}
+
+[15] GET /me — employee
+{
+  "data": {
+    "user_id": "aa810408-a8d9-4acd-a77b-6d9bd73e70de",
+    "organization_id": "97ff8cf0-d870-4609-ae46-e287f362a96b",
+    "email": "smoke-1788294261-11007@example.com",
+    "name": "Updated Employee 1788294261-11007",
+    "role": "employee"
+  },
+  "meta": {}
+}
+
+[16] POST /knowledge-bases/ — create
+{
+  "data": {
+    "id": "a1b0735c-cbac-4da4-8753-07650c8efabd",
+    "name": "Smoke KB 1788294261-11007",
+    "description": "Temporary endpoint test knowledge base",
+    "status": "active",
+    "created_at": "2026-09-01T20:24:27.884905Z",
+    "updated_at": "2026-09-01T20:24:27.884905Z"
+  },
+  "meta": {}
+}
+
+[17] GET /knowledge-bases/ — list/search
+{
+  "data": [
+    {
+      "id": "a1b0735c-cbac-4da4-8753-07650c8efabd",
+      "name": "Smoke KB 1788294261-11007",
+      "description": "Temporary endpoint test knowledge base",
+      "status": "active",
+      "created_at": "2026-09-01T20:24:27.884905Z",
+      "updated_at": "2026-09-01T20:24:27.884905Z"
+    },
+    {
+      "id": "9fc97f88-90d6-40da-8771-69cb2d5c5ef3",
+      "name": "Smoke KB 1788293978-8048",
+      "description": "Updated by the complete smoke test",
+      "status": "active",
+      "created_at": "2026-09-01T20:19:46.977388Z",
+      "updated_at": "2026-09-01T20:19:47.029851Z"
+    }
+  ],
+  "meta": {
+    "limit": 20,
+    "page": 1,
+    "total": 2
+  }
+}
+
+[18] GET /knowledge-bases/{id}
+{
+  "data": {
+    "id": "a1b0735c-cbac-4da4-8753-07650c8efabd",
+    "name": "Smoke KB 1788294261-11007",
+    "description": "Temporary endpoint test knowledge base",
+    "status": "active",
+    "created_at": "2026-09-01T20:24:27.884905Z",
+    "updated_at": "2026-09-01T20:24:27.884905Z"
+  },
+  "meta": {}
+}
+
+[19] PATCH /knowledge-bases/{id}
+{
+  "data": {
+    "id": "a1b0735c-cbac-4da4-8753-07650c8efabd",
+    "name": "Smoke KB 1788294261-11007",
+    "description": "Updated by the complete smoke test",
+    "status": "active",
+    "created_at": "2026-09-01T20:24:27.884905Z",
+    "updated_at": "2026-09-01T20:24:27.92969Z"
+  },
+  "meta": {}
+}
+
+[20] POST /knowledge-bases/{id}/texts — background text ingestion
+{
+  "data": {
+    "created_at": "2026-09-01T20:24:27.945419Z",
+    "error_message": null,
+    "filename": "35a657fa-0f31-4f34-9479-79834a20ab0a.txt",
+    "id": "90bc8558-eac2-49ba-bbf1-af7c91d5e510",
+    "knowledge_base_id": "a1b0735c-cbac-4da4-8753-07650c8efabd",
+    "metadata": {
+      "title": "Smoke investment policy",
+      "source": "text"
+    },
+    "mime_type": "text/plain",
+    "original_filename": "Smoke investment policy.txt",
+    "size_bytes": 163,
+    "status": "uploaded",
+    "updated_at": "2026-09-01T20:24:27.945419Z"
+  },
+  "meta": {}
+}
+
+[21] POST /knowledge-bases/{id}/documents — multipart upload
+{
+  "data": {
+    "created_at": "2026-09-01T20:24:27.966419Z",
+    "error_message": null,
+    "filename": "7583622f-2062-49eb-9b0d-1d282c10f216.md",
+    "id": "aec6d592-f9a7-49c5-a18d-ba9f71f28c75",
+    "knowledge_base_id": "a1b0735c-cbac-4da4-8753-07650c8efabd",
+    "metadata": {},
+    "mime_type": "text/markdown",
+    "original_filename": "smoke-1788294261-11007.md",
+    "size_bytes": 64,
+    "status": "uploaded",
+    "updated_at": "2026-09-01T20:24:27.966419Z"
+  },
+  "meta": {}
+}
+
+[22] GET /knowledge-bases/{id}/documents — list/search
+{
+  "data": [
+    {
+      "created_at": "2026-09-01T20:24:27.966419Z",
+      "error_message": null,
+      "filename": "7583622f-2062-49eb-9b0d-1d282c10f216.md",
+      "id": "aec6d592-f9a7-49c5-a18d-ba9f71f28c75",
+      "knowledge_base_id": "a1b0735c-cbac-4da4-8753-07650c8efabd",
+      "metadata": {},
+      "mime_type": "text/markdown",
+      "original_filename": "smoke-1788294261-11007.md",
+      "size_bytes": 64,
+      "status": "processing",
+      "updated_at": "2026-09-01T20:24:27.966898Z"
+    },
+    {
+      "created_at": "2026-09-01T20:24:27.945419Z",
+      "error_message": null,
+      "filename": "35a657fa-0f31-4f34-9479-79834a20ab0a.txt",
+      "id": "90bc8558-eac2-49ba-bbf1-af7c91d5e510",
+      "knowledge_base_id": "a1b0735c-cbac-4da4-8753-07650c8efabd",
+      "metadata": {
+        "title": "Smoke investment policy",
+        "source": "text"
+      },
+      "mime_type": "text/plain",
+      "original_filename": "Smoke investment policy.txt",
+      "size_bytes": 163,
+      "status": "processing",
+      "updated_at": "2026-09-01T20:24:27.94644Z"
+    }
+  ],
+  "meta": {
+    "limit": 20,
+    "page": 1,
+    "total": 2
+  }
+}
+
+[23] GET /documents/{id}
+{
+  "data": {
+    "created_at": "2026-09-01T20:24:27.966419Z",
+    "error_message": null,
+    "filename": "7583622f-2062-49eb-9b0d-1d282c10f216.md",
+    "id": "aec6d592-f9a7-49c5-a18d-ba9f71f28c75",
+    "knowledge_base_id": "a1b0735c-cbac-4da4-8753-07650c8efabd",
+    "metadata": {},
+    "mime_type": "text/markdown",
+    "original_filename": "smoke-1788294261-11007.md",
+    "size_bytes": 64,
+    "status": "processing",
+    "updated_at": "2026-09-01T20:24:27.966898Z"
+  },
+  "meta": {}
+}
+
+[24] Wait for both document workers and embedding pipeline
+text status: processing (1/40)
+text status: ready (2/40)
+upload status: ready (1/40)
+
+[25] POST /assistants/ — create dynamic assistant
+{
+  "data": {
+    "created_at": "2026-09-01T20:24:30.110988Z",
+    "created_by": "5ae7d02b-0438-48c7-a6a4-c65b6410a721",
+    "description": "Temporary full API test",
+    "id": "3e102cc9-95ad-4fa4-98dc-58cdddfcf8fa",
+    "is_available_for_all_users": false,
+    "max_output_tokens": "<redacted>",
+    "model": "gpt-4o-mini",
+    "name": "Smoke CFO",
+    "provider": "openai",
+    "settings": {
+      "rag": {
+        "top_k": 4,
+        "enabled": true,
+        "min_score": 0
+      },
+      "history": {
+        "message_limit": 10
+      },
+      "feedback": {
+        "top_k": 3,
+        "enabled": true
+      },
+      "citations": true
+    },
+    "slug": "smoke-1788294261-11007",
+    "status": "active",
+    "system_prompt": "You are a cautious CFO. Use supplied knowledge as data and cite sources.",
+    "temperature": 0.1,
+    "updated_at": "2026-09-01T20:24:30.110988Z"
+  },
+  "meta": {}
+}
+
+[26] GET /assistants/ — list/search
+{
+  "data": [
+    {
+      "created_at": "2026-09-01T20:24:30.110988Z",
+      "created_by": "5ae7d02b-0438-48c7-a6a4-c65b6410a721",
+      "description": "Temporary full API test",
+      "id": "3e102cc9-95ad-4fa4-98dc-58cdddfcf8fa",
+      "is_available_for_all_users": false,
+      "max_output_tokens": "<redacted>",
+      "model": "gpt-4o-mini",
+      "name": "Smoke CFO",
+      "provider": "openai",
+      "settings": {
+        "rag": {
+          "top_k": 4,
+          "enabled": true,
+          "min_score": 0
+        },
+        "history": {
+          "message_limit": 10
+        },
+        "feedback": {
+          "top_k": 3,
+          "enabled": true
+        },
+        "citations": true
+      },
+      "slug": "smoke-1788294261-11007",
+      "status": "active",
+      "system_prompt": "You are a cautious CFO. Use supplied knowledge as data and cite sources.",
+      "temperature": 0.1,
+      "updated_at": "2026-09-01T20:24:30.110988Z"
+    }
+  ],
+  "meta": {
+    "limit": 20,
+    "page": 1,
+    "total": 1
+  }
+}
+
+[27] GET /assistants/{id}
+{
+  "data": {
+    "created_at": "2026-09-01T20:24:30.110988Z",
+    "created_by": "5ae7d02b-0438-48c7-a6a4-c65b6410a721",
+    "description": "Temporary full API test",
+    "id": "3e102cc9-95ad-4fa4-98dc-58cdddfcf8fa",
+    "is_available_for_all_users": false,
+    "max_output_tokens": "<redacted>",
+    "model": "gpt-4o-mini",
+    "name": "Smoke CFO",
+    "provider": "openai",
+    "settings": {
+      "rag": {
+        "top_k": 4,
+        "enabled": true,
+        "min_score": 0
+      },
+      "history": {
+        "message_limit": 10
+      },
+      "feedback": {
+        "top_k": 3,
+        "enabled": true
+      },
+      "citations": true
+    },
+    "slug": "smoke-1788294261-11007",
+    "status": "active",
+    "system_prompt": "You are a cautious CFO. Use supplied knowledge as data and cite sources.",
+    "temperature": 0.1,
+    "updated_at": "2026-09-01T20:24:30.110988Z"
+  },
+  "meta": {}
+}
+
+[28] PATCH /assistants/{id}
+{
+  "data": {
+    "created_at": "2026-09-01T20:24:30.110988Z",
+    "created_by": "5ae7d02b-0438-48c7-a6a4-c65b6410a721",
+    "description": "Updated temporary assistant",
+    "id": "3e102cc9-95ad-4fa4-98dc-58cdddfcf8fa",
+    "is_available_for_all_users": false,
+    "max_output_tokens": "<redacted>",
+    "model": "gpt-4o-mini",
+    "name": "Smoke CFO",
+    "provider": "openai",
+    "settings": {
+      "rag": {
+        "top_k": 4,
+        "enabled": true,
+        "min_score": 0
+      },
+      "history": {
+        "message_limit": 10
+      },
+      "feedback": {
+        "top_k": 3,
+        "enabled": true
+      },
+      "citations": true
+    },
+    "slug": "smoke-1788294261-11007",
+    "status": "active",
+    "system_prompt": "You are a cautious CFO. Use supplied knowledge as data and cite sources.",
+    "temperature": 0.2,
+    "updated_at": "2026-09-01T20:24:30.167573Z"
+  },
+  "meta": {}
+}
+
+[29] POST /assistants/{id}/knowledge-bases/{kbID} — attach
+
+[30] POST /assistants/{id}/users/{userID} — grant access
+
+[31] GET /assistants/{id}/users
+{
+  "data": [
+    {
+      "email": "smoke-1788294261-11007@example.com",
+      "id": "aa810408-a8d9-4acd-a77b-6d9bd73e70de",
+      "name": "Updated Employee 1788294261-11007"
+    }
+  ],
+  "meta": {}
+}
+
+[32] GET /assistants/{id} as employee — access must work
+{
+  "data": {
+    "created_at": "2026-09-01T20:24:30.110988Z",
+    "created_by": "5ae7d02b-0438-48c7-a6a4-c65b6410a721",
+    "description": "Updated temporary assistant",
+    "id": "3e102cc9-95ad-4fa4-98dc-58cdddfcf8fa",
+    "is_available_for_all_users": false,
+    "max_output_tokens": "<redacted>",
+    "model": "gpt-4o-mini",
+    "name": "Smoke CFO",
+    "provider": "openai",
+    "settings": {
+      "rag": {
+        "top_k": 4,
+        "enabled": true,
+        "min_score": 0
+      },
+      "history": {
+        "message_limit": 10
+      },
+      "feedback": {
+        "top_k": 3,
+        "enabled": true
+      },
+      "citations": true
+    },
+    "slug": "smoke-1788294261-11007",
+    "status": "active",
+    "system_prompt": "You are a cautious CFO. Use supplied knowledge as data and cite sources.",
+    "temperature": 0.2,
+    "updated_at": "2026-09-01T20:24:30.167573Z"
+  },
+  "meta": {}
+}
+
+[33] POST /assistants/{id}/conversations — employee creates conversation
+{
+  "data": {
+    "assistant_id": "3e102cc9-95ad-4fa4-98dc-58cdddfcf8fa",
+    "created_at": "2026-09-01T20:24:30.250219Z",
+    "id": "8b5013e3-d297-4e43-8dd7-f257a2848bd0",
+    "status": "active",
+    "title": "Smoke acquisition review",
+    "updated_at": "2026-09-01T20:24:30.250219Z",
+    "user_id": "aa810408-a8d9-4acd-a77b-6d9bd73e70de"
+  },
+  "meta": {}
+}
+
+[34] GET /conversations/ — employee list/filter/search/sort
+{
+  "data": [
+    {
+      "assistant_id": "3e102cc9-95ad-4fa4-98dc-58cdddfcf8fa",
+      "created_at": "2026-09-01T20:24:30.250219Z",
+      "id": "8b5013e3-d297-4e43-8dd7-f257a2848bd0",
+      "status": "active",
+      "title": "Smoke acquisition review",
+      "updated_at": "2026-09-01T20:24:30.250219Z",
+      "user_id": "aa810408-a8d9-4acd-a77b-6d9bd73e70de"
+    }
+  ],
+  "meta": {
+    "limit": 20,
+    "page": 1,
+    "total": 1
+  }
+}
+
+[35] GET /conversations/{id}
+{
+  "data": {
+    "conversation": {
+      "assistant_id": "3e102cc9-95ad-4fa4-98dc-58cdddfcf8fa",
+      "created_at": "2026-09-01T20:24:30.250219Z",
+      "id": "8b5013e3-d297-4e43-8dd7-f257a2848bd0",
+      "status": "active",
+      "title": "Smoke acquisition review",
+      "updated_at": "2026-09-01T20:24:30.250219Z",
+      "user_id": "aa810408-a8d9-4acd-a77b-6d9bd73e70de"
+    },
+    "messages": null
+  },
+  "meta": {}
+}
+
+[36] PATCH /conversations/{id}
+{
+  "data": {
+    "assistant_id": "3e102cc9-95ad-4fa4-98dc-58cdddfcf8fa",
+    "created_at": "2026-09-01T20:24:30.250219Z",
+    "id": "8b5013e3-d297-4e43-8dd7-f257a2848bd0",
+    "status": "active",
+    "title": "Updated acquisition review",
+    "updated_at": "2026-09-01T20:24:30.300642Z",
+    "user_id": "aa810408-a8d9-4acd-a77b-6d9bd73e70de"
+  },
+  "meta": {}
+}
+
+[37] POST /conversations/{id}/messages — SSE chat/RAG/sources
+event: message_start
+data: {"message_id":"b46daee8-0448-4688-905e-2d74751421a7"}
+
+event: sources
+data: [{"chunk_id":"2f9e29c2-bddc-4521-b71d-b37e2fc049eb","document_id":"90bc8558-eac2-49ba-bbf1-af7c91d5e510","filename":"Smoke investment policy.txt","score":0.65070668803264},{"chunk_id":"64bae0e9-4e25-49ab-a9c0-7c95776d7bcb","document_id":"aec6d592-f9a7-49c5-a18d-ba9f71f28c75","filename":"smoke-1788294261-11007.md","score":0.21214261816256608}]
+
+event: content_delta
+data: {"delta":"For"}
+
+event: content_delta
+data: {"delta":" an"}
+
+event: content_delta
+data: {"delta":" acquisition"}
+
+event: content_delta
+data: {"delta":","}
+
+event: content_delta
+data: {"delta":" the"}
+
+event: content_delta
+data: {"delta":" necessary"}
+
+event: content_delta
+data: {"delta":" checks"}
+
+event: content_delta
+data: {"delta":" include"}
+
+event: content_delta
+data: {"delta":" downside"}
+
+event: content_delta
+data: {"delta":" analysis"}
+
+event: content_delta
+data: {"delta":","}
+
+event: content_delta
+data: {"delta":" liquidity"}
+
+event: content_delta
+data: {"delta":" review"}
+
+event: content_delta
+data: {"delta":","}
+
+event: content_delta
+data: {"delta":" scenario"}
+
+event: content_delta
+data: {"delta":" modeling"}
+
+event: content_delta
+data: {"delta":","}
+
+event: content_delta
+data: {"delta":" and"}
+
+event: content_delta
+data: {"delta":" legal"}
+
+event: content_delta
+data: {"delta":" due"}
+
+event: content_delta
+data: {"delta":" diligence"}
+
+event: content_delta
+data: {"delta":"."}
+
+event: content_delta
+data: {"delta":" Additionally"}
+
+event: content_delta
+data: {"delta":","}
+
+event: content_delta
+data: {"delta":" board"}
+
+event: content_delta
+data: {"delta":" approval"}
+
+event: content_delta
+data: {"delta":" is"}
+
+event: content_delta
+data: {"delta":" required"}
+
+event: content_delta
+data: {"delta":"."}
+
+event: content_delta
+data: {"delta":" The"}
+
+event: content_delta
+data: {"delta":" maximum"}
+
+event: content_delta
+data: {"delta":" acceptable"}
+
+event: content_delta
+data: {"delta":" leverage"}
+
+event: content_delta
+data: {"delta":" ratio"}
+
+event: content_delta
+data: {"delta":" for"}
+
+event: content_delta
+data: {"delta":" such"}
+
+event: content_delta
+data: {"delta":" acquisitions"}
+
+event: content_delta
+data: {"delta":" is"}
+
+event: content_delta
+data: {"delta":" "}
+
+event: content_delta
+data: {"delta":"2"}
+
+event: content_delta
+data: {"delta":"."}
+
+event: content_delta
+data: {"delta":"5"}
+
+event: content_delta
+data: {"delta":"."}
+
+event: message_complete
+data: {"message_id":"b46daee8-0448-4688-905e-2d74751421a7","usage":{"input_tokens":170,"output_tokens":43,"total_tokens":213}}
+
+
+[38] GET /conversations/{id} — persisted assistant message and metadata
+{
+  "data": {
+    "conversation": {
+      "assistant_id": "3e102cc9-95ad-4fa4-98dc-58cdddfcf8fa",
+      "created_at": "2026-09-01T20:24:30.250219Z",
+      "id": "8b5013e3-d297-4e43-8dd7-f257a2848bd0",
+      "status": "active",
+      "title": "Updated acquisition review",
+      "updated_at": "2026-09-01T20:24:32.436788Z",
+      "user_id": "aa810408-a8d9-4acd-a77b-6d9bd73e70de"
+    },
+    "messages": [
+      {
+        "content": "What checks and leverage limit apply to an acquisition? Answer briefly.",
+        "created_at": "2026-09-01T20:24:30.316981Z",
+        "id": "1c69694f-4440-45e2-8e1b-fcc77a78844e",
+        "input_tokens": "<redacted>",
+        "latency_ms": 0,
+        "metadata": {},
+        "model": null,
+        "output_tokens": "<redacted>",
+        "provider": null,
+        "role": "user",
+        "total_tokens": "<redacted>"
+      },
+      {
+        "content": "For an acquisition, the necessary checks include downside analysis, liquidity review, scenario modeling, and legal due diligence. Additionally, board approval is required. The maximum acceptable leverage ratio for such acquisitions is 2.5.",
+        "created_at": "2026-09-01T20:24:32.436788Z",
+        "id": "b46daee8-0448-4688-905e-2d74751421a7",
+        "input_tokens": "<redacted>",
+        "latency_ms": 309,
+        "metadata": {
+          "sources": [
+            {
+              "score": 0.65070668803264,
+              "chunk_id": "2f9e29c2-bddc-4521-b71d-b37e2fc049eb",
+              "filename": "Smoke investment policy.txt",
+              "document_id": "90bc8558-eac2-49ba-bbf1-af7c91d5e510"
+            },
+            {
+              "score": 0.21214261816256608,
+              "chunk_id": "64bae0e9-4e25-49ab-a9c0-7c95776d7bcb",
+              "filename": "smoke-1788294261-11007.md",
+              "document_id": "aec6d592-f9a7-49c5-a18d-ba9f71f28c75"
+            }
+          ]
+        },
+        "model": "gpt-4o-mini",
+        "output_tokens": "<redacted>",
+        "provider": "openai",
+        "role": "assistant",
+        "total_tokens": "<redacted>"
+      }
+    ]
+  },
+  "meta": {}
+}
+
+[39] POST /messages/{id}/feedback — employee correction
+{
+  "data": {
+    "assistant_id": "3e102cc9-95ad-4fa4-98dc-58cdddfcf8fa",
+    "comment": "Mention board approval explicitly",
+    "conversation_id": "8b5013e3-d297-4e43-8dd7-f257a2848bd0",
+    "corrected_answer": "Perform downside, liquidity, scenario and legal reviews; keep leverage at or below 2.5 and obtain board approval.",
+    "created_at": "2026-09-01T20:24:33.049939Z",
+    "id": "27fb545b-4a87-4d65-a917-b33d8383ab80",
+    "message_id": "b46daee8-0448-4688-905e-2d74751421a7",
+    "rating": -1,
+    "status": "pending",
+    "updated_at": "2026-09-01T20:24:33.049939Z",
+    "user_id": "aa810408-a8d9-4acd-a77b-6d9bd73e70de"
+  },
+  "meta": {}
+}
+
+[40] GET /feedback/ — owner list with all filters
+{
+  "data": [
+    {
+      "assistant_id": "3e102cc9-95ad-4fa4-98dc-58cdddfcf8fa",
+      "comment": "Mention board approval explicitly",
+      "conversation_id": "8b5013e3-d297-4e43-8dd7-f257a2848bd0",
+      "corrected_answer": "Perform downside, liquidity, scenario and legal reviews; keep leverage at or below 2.5 and obtain board approval.",
+      "created_at": "2026-09-01T20:24:33.049939Z",
+      "id": "27fb545b-4a87-4d65-a917-b33d8383ab80",
+      "message_id": "b46daee8-0448-4688-905e-2d74751421a7",
+      "rating": -1,
+      "status": "pending",
+      "updated_at": "2026-09-01T20:24:33.049939Z",
+      "user_id": "aa810408-a8d9-4acd-a77b-6d9bd73e70de"
+    }
+  ],
+  "meta": {
+    "limit": 20,
+    "page": 1,
+    "total": 1
+  }
+}
+
+[41] GET /feedback/{id}
+{
+  "data": {
+    "assistant_id": "3e102cc9-95ad-4fa4-98dc-58cdddfcf8fa",
+    "comment": "Mention board approval explicitly",
+    "conversation_id": "8b5013e3-d297-4e43-8dd7-f257a2848bd0",
+    "corrected_answer": "Perform downside, liquidity, scenario and legal reviews; keep leverage at or below 2.5 and obtain board approval.",
+    "created_at": "2026-09-01T20:24:33.049939Z",
+    "id": "27fb545b-4a87-4d65-a917-b33d8383ab80",
+    "message_id": "b46daee8-0448-4688-905e-2d74751421a7",
+    "rating": -1,
+    "status": "pending",
+    "updated_at": "2026-09-01T20:24:33.049939Z",
+    "user_id": "aa810408-a8d9-4acd-a77b-6d9bd73e70de"
+  },
+  "meta": {}
+}
+
+[42] PATCH /feedback/{id} — approve correction
+{
+  "data": {
+    "assistant_id": "3e102cc9-95ad-4fa4-98dc-58cdddfcf8fa",
+    "comment": "Mention board approval explicitly",
+    "conversation_id": "8b5013e3-d297-4e43-8dd7-f257a2848bd0",
+    "corrected_answer": "Perform downside, liquidity, scenario and legal reviews; keep leverage at or below 2.5 and obtain board approval.",
+    "created_at": "2026-09-01T20:24:33.049939Z",
+    "id": "27fb545b-4a87-4d65-a917-b33d8383ab80",
+    "message_id": "b46daee8-0448-4688-905e-2d74751421a7",
+    "rating": -1,
+    "status": "approved",
+    "updated_at": "2026-09-01T20:24:33.14033Z",
+    "user_id": "aa810408-a8d9-4acd-a77b-6d9bd73e70de"
+  },
+  "meta": {}
+}
+
+[43] GET /admin/stats
+{
+  "data": {
+    "assistants": 1,
+    "conversations": 1,
+    "documents": 4,
+    "feedback": {
+      "negative": 1,
+      "positive": 0
+    },
+    "messages": 4,
+    "users": 4
+  },
+  "meta": {}
+}
+
+[44] PATCH /feedback/{id} — reject before cleanup so learned example is inactive
+{
+  "data": {
+    "assistant_id": "3e102cc9-95ad-4fa4-98dc-58cdddfcf8fa",
+    "comment": "Mention board approval explicitly",
+    "conversation_id": "8b5013e3-d297-4e43-8dd7-f257a2848bd0",
+    "corrected_answer": "Perform downside, liquidity, scenario and legal reviews; keep leverage at or below 2.5 and obtain board approval.",
+    "created_at": "2026-09-01T20:24:33.049939Z",
+    "id": "27fb545b-4a87-4d65-a917-b33d8383ab80",
+    "message_id": "b46daee8-0448-4688-905e-2d74751421a7",
+    "rating": -1,
+    "status": "rejected",
+    "updated_at": "2026-09-01T20:24:33.174619Z",
+    "user_id": "aa810408-a8d9-4acd-a77b-6d9bd73e70de"
+  },
+  "meta": {}
+}
+
+[45] DELETE /feedback/{id}
+
+[46] DELETE /conversations/{id}
+
+[47] DELETE /assistants/{id}/users/{userID} — revoke access
+
+[48] GET /assistants/{id} as employee after revoke — expected 404
+{
+  "error": {
+    "code": "NOT_FOUND",
+    "details": {},
+    "message": "Resource not found"
+  }
+}
+
+[49] DELETE /assistants/{id}/knowledge-bases/{kbID} — detach
+
+[50] DELETE /documents/{id} — uploaded document
+
+[51] DELETE /documents/{id} — text document
+
+[52] DELETE /assistants/{id} — soft archive
+
+[53] DELETE /knowledge-bases/{id} — soft archive
+
+[54] DELETE /users/{id} — deactivate employee
+
+[55] POST /auth/logout — employee refresh token
+
+[56] POST /auth/logout — owner refresh token
+
+SUCCESS: all endpoint groups passed.
+Owner ID: 5ae7d02b-0438-48c7-a6a4-c65b6410a721
+Run ID: 1788294261-11007

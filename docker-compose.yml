@@ -1,0 +1,53 @@
+name: ai-platform
+services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    container_name: ai-platform-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    ports:
+      - "127.0.0.1:${POSTGRES_HOST_PORT:-15439}:5432"
+    volumes:
+      - ai-platform-postgres-data:/var/lib/postgresql/data
+    networks: [ai-platform-network]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    security_opt: [no-new-privileges:true]
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ai-platform-backend
+    restart: unless-stopped
+    env_file: [.env]
+    ports:
+      - "${APP_PORT:-18473}:${APP_PORT:-18473}"
+    volumes:
+      - ai-platform-uploads:/app/data/uploads
+    networks: [ai-platform-network]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:$${APP_PORT:-18473}/health >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+      start_period: 25s
+    security_opt: [no-new-privileges:true]
+volumes:
+  ai-platform-postgres-data:
+    name: ai-platform-postgres-data
+  ai-platform-uploads:
+    name: ai-platform-uploads
+networks:
+  ai-platform-network:
+    name: ai-platform-network
+    driver: bridge
