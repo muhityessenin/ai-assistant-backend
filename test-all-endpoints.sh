@@ -247,6 +247,25 @@ say 'PATCH /conversations/{id}'
 json_call PATCH "$API/conversations/$CONVERSATION_ID" 200 "$TMP_DIR/conversation-update.json" "$EMPLOYEE_ACCESS" \
   '{"title":"Updated acquisition review"}'
 
+say 'PATCH /conversations/{id} — switch to train mode'
+json_call PATCH "$API/conversations/$CONVERSATION_ID" 200 "$TMP_DIR/conversation-train-mode.json" "$EMPLOYEE_ACCESS" \
+  '{"mode":"train"}'
+jq -e '.data.mode == "train"' "$TMP_DIR/conversation-train-mode.json" >/dev/null
+
+say 'POST /conversations/{id}/messages — teach persistent assistant memory'
+curl --fail-with-body -sS -N -X POST \
+  -H "Authorization: Bearer $EMPLOYEE_ACCESS" -H 'Content-Type: application/json' \
+  --data '{"content":"Training rule: the internal phrase Blue Lantern means that explicit board approval is required."}' \
+  "$API/conversations/$CONVERSATION_ID/messages" | tee "$TMP_DIR/train-chat.sse"
+grep -q '^event: message_complete' "$TMP_DIR/train-chat.sse"
+TRAIN_COMPLETE_JSON="$(awk '/^event: message_complete/{getline; sub(/^data: /, ""); print; exit}' "$TMP_DIR/train-chat.sse")"
+jq -e '.mode == "train" and (.training_entry_id | type == "string")' <<<"$TRAIN_COMPLETE_JSON" >/dev/null
+
+say 'PATCH /conversations/{id} — return to work mode'
+json_call PATCH "$API/conversations/$CONVERSATION_ID" 200 "$TMP_DIR/conversation-work-mode.json" "$EMPLOYEE_ACCESS" \
+  '{"mode":"work"}'
+jq -e '.data.mode == "work"' "$TMP_DIR/conversation-work-mode.json" >/dev/null
+
 say 'POST /conversations/{id}/messages — SSE chat/RAG/sources'
 curl --fail-with-body -sS -N -X POST \
   -H "Authorization: Bearer $EMPLOYEE_ACCESS" -H 'Content-Type: application/json' \

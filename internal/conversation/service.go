@@ -18,12 +18,12 @@ import (
 
 type Conversation struct {
 	ID, AssistantID, UserID uuid.UUID
-	Title, Status           string
+	Title, Status, Mode     string
 	CreatedAt, UpdatedAt    time.Time
 }
 
 func (c Conversation) MarshalJSON() ([]byte, error) {
-	return json.Marshal(map[string]any{"id": c.ID, "assistant_id": c.AssistantID, "user_id": c.UserID, "title": c.Title, "status": c.Status, "created_at": c.CreatedAt, "updated_at": c.UpdatedAt})
+	return json.Marshal(map[string]any{"id": c.ID, "assistant_id": c.AssistantID, "user_id": c.UserID, "title": c.Title, "status": c.Status, "mode": c.Mode, "created_at": c.CreatedAt, "updated_at": c.UpdatedAt})
 }
 
 type Message struct {
@@ -53,7 +53,7 @@ type Service struct {
 func NewService(db *pgxpool.Pool, a *assistant.Service, o ai.Orchestrator) *Service {
 	return &Service{db: db, assistants: a, ai: o}
 }
-func (s *Service) Create(ctx context.Context, a auth.Actor, assistantID uuid.UUID, title string) (Conversation, error) {
+func (s *Service) Create(ctx context.Context, a auth.Actor, assistantID uuid.UUID, title, mode string) (Conversation, error) {
 	if _, err := s.assistants.Get(ctx, a, assistantID); err != nil {
 		return Conversation{}, err
 	}
@@ -64,8 +64,14 @@ func (s *Service) Create(ctx context.Context, a auth.Actor, assistantID uuid.UUI
 	if len(title) > 300 {
 		return Conversation{}, response.E(422, "VALIDATION_ERROR", "Title is too long")
 	}
+	if mode == "" {
+		mode = "work"
+	}
+	if mode != "work" && mode != "train" {
+		return Conversation{}, response.E(422, "VALIDATION_ERROR", "mode must be work or train")
+	}
 	var c Conversation
-	err := s.db.QueryRow(ctx, `INSERT INTO conversations(organization_id,assistant_id,user_id,title) VALUES($1,$2,$3,$4) RETURNING id,assistant_id,user_id,title,status,created_at,updated_at`, a.OrganizationID, assistantID, a.UserID, title).Scan(&c.ID, &c.AssistantID, &c.UserID, &c.Title, &c.Status, &c.CreatedAt, &c.UpdatedAt)
+	err := s.db.QueryRow(ctx, `INSERT INTO conversations(organization_id,assistant_id,user_id,title,mode) VALUES($1,$2,$3,$4,$5) RETURNING id,assistant_id,user_id,title,status,mode,created_at,updated_at`, a.OrganizationID, assistantID, a.UserID, title, mode).Scan(&c.ID, &c.AssistantID, &c.UserID, &c.Title, &c.Status, &c.Mode, &c.CreatedAt, &c.UpdatedAt)
 	return c, err
 }
 func (s *Service) List(ctx context.Context, a auth.Actor, page, limit int, assistantID *uuid.UUID, search, sort string) ([]Conversation, int, error) {
@@ -75,7 +81,7 @@ func (s *Service) List(ctx context.Context, a auth.Actor, page, limit int, assis
 	} else if sort == "title" {
 		order = "title ASC"
 	}
-	q := `SELECT id,assistant_id,user_id,title,status,created_at,updated_at,count(*) OVER() FROM conversations WHERE organization_id=$1 AND status='active' AND ($2 OR user_id=$3) AND ($4::uuid IS NULL OR assistant_id=$4) AND ($5='' OR title ILIKE '%'||$5||'%') ORDER BY ` + order + ` LIMIT $6 OFFSET $7`
+	q := `SELECT id,assistant_id,user_id,title,status,mode,created_at,updated_at,count(*) OVER() FROM conversations WHERE organization_id=$1 AND status='active' AND ($2 OR user_id=$3) AND ($4::uuid IS NULL OR assistant_id=$4) AND ($5='' OR title ILIKE '%'||$5||'%') ORDER BY ` + order + ` LIMIT $6 OFFSET $7`
 	rows, err := s.db.Query(ctx, q, a.OrganizationID, a.IsAdmin(), a.UserID, assistantID, search, limit, (page-1)*limit)
 	if err != nil {
 		return nil, 0, err
@@ -85,7 +91,7 @@ func (s *Service) List(ctx context.Context, a auth.Actor, page, limit int, assis
 	total := 0
 	for rows.Next() {
 		var c Conversation
-		if err = rows.Scan(&c.ID, &c.AssistantID, &c.UserID, &c.Title, &c.Status, &c.CreatedAt, &c.UpdatedAt, &total); err != nil {
+		if err = rows.Scan(&c.ID, &c.AssistantID, &c.UserID, &c.Title, &c.Status, &c.Mode, &c.CreatedAt, &c.UpdatedAt, &total); err != nil {
 			return nil, 0, err
 		}
 		out = append(out, c)
@@ -94,7 +100,7 @@ func (s *Service) List(ctx context.Context, a auth.Actor, page, limit int, assis
 }
 func (s *Service) Get(ctx context.Context, a auth.Actor, id uuid.UUID) (Detail, error) {
 	var d Detail
-	err := s.db.QueryRow(ctx, `SELECT id,assistant_id,user_id,title,status,created_at,updated_at FROM conversations WHERE organization_id=$1 AND id=$2 AND status='active' AND ($3 OR user_id=$4)`, a.OrganizationID, id, a.IsAdmin(), a.UserID).Scan(&d.Conversation.ID, &d.Conversation.AssistantID, &d.Conversation.UserID, &d.Conversation.Title, &d.Conversation.Status, &d.Conversation.CreatedAt, &d.Conversation.UpdatedAt)
+	err := s.db.QueryRow(ctx, `SELECT id,assistant_id,user_id,title,status,mode,created_at,updated_at FROM conversations WHERE organization_id=$1 AND id=$2 AND status='active' AND ($3 OR user_id=$4)`, a.OrganizationID, id, a.IsAdmin(), a.UserID).Scan(&d.Conversation.ID, &d.Conversation.AssistantID, &d.Conversation.UserID, &d.Conversation.Title, &d.Conversation.Status, &d.Conversation.Mode, &d.Conversation.CreatedAt, &d.Conversation.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return d, response.ErrNotFound
 	}
@@ -115,13 +121,22 @@ func (s *Service) Get(ctx context.Context, a auth.Actor, id uuid.UUID) (Detail, 
 	}
 	return d, rows.Err()
 }
-func (s *Service) Rename(ctx context.Context, a auth.Actor, id uuid.UUID, title string) (Conversation, error) {
-	title = strings.TrimSpace(title)
-	if title == "" || len(title) > 300 {
-		return Conversation{}, response.E(422, "VALIDATION_ERROR", "Invalid title")
+func (s *Service) Update(ctx context.Context, a auth.Actor, id uuid.UUID, title, mode *string) (Conversation, error) {
+	if title == nil && mode == nil {
+		return Conversation{}, response.E(422, "VALIDATION_ERROR", "title or mode is required")
+	}
+	if title != nil {
+		trimmed := strings.TrimSpace(*title)
+		if trimmed == "" || len(trimmed) > 300 {
+			return Conversation{}, response.E(422, "VALIDATION_ERROR", "Invalid title")
+		}
+		title = &trimmed
+	}
+	if mode != nil && *mode != "work" && *mode != "train" {
+		return Conversation{}, response.E(422, "VALIDATION_ERROR", "mode must be work or train")
 	}
 	var c Conversation
-	err := s.db.QueryRow(ctx, `UPDATE conversations SET title=$5,updated_at=now() WHERE organization_id=$1 AND id=$2 AND status='active' AND ($3 OR user_id=$4) RETURNING id,assistant_id,user_id,title,status,created_at,updated_at`, a.OrganizationID, id, a.IsAdmin(), a.UserID, title).Scan(&c.ID, &c.AssistantID, &c.UserID, &c.Title, &c.Status, &c.CreatedAt, &c.UpdatedAt)
+	err := s.db.QueryRow(ctx, `UPDATE conversations SET title=COALESCE($5,title),mode=COALESCE($6,mode),updated_at=now() WHERE organization_id=$1 AND id=$2 AND status='active' AND ($3 OR user_id=$4) RETURNING id,assistant_id,user_id,title,status,mode,created_at,updated_at`, a.OrganizationID, id, a.IsAdmin(), a.UserID, title, mode).Scan(&c.ID, &c.AssistantID, &c.UserID, &c.Title, &c.Status, &c.Mode, &c.CreatedAt, &c.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		err = response.ErrNotFound
 	}
@@ -153,7 +168,7 @@ func (s *Service) Send(ctx context.Context, a auth.Actor, id uuid.UUID, content 
 		return nil, err
 	}
 	defer tx.Rollback(ctx)
-	_, err = tx.Exec(ctx, `INSERT INTO messages(id,organization_id,conversation_id,role,content) VALUES($1,$2,$3,'user',$4)`, mid, a.OrganizationID, id, content)
+	_, err = tx.Exec(ctx, `INSERT INTO messages(id,organization_id,conversation_id,role,content,metadata) SELECT $1,$2,$3,'user',$4,jsonb_build_object('conversation_mode',mode) FROM conversations WHERE organization_id=$2 AND id=$3`, mid, a.OrganizationID, id, content)
 	if err != nil {
 		return nil, err
 	}

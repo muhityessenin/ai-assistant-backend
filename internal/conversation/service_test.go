@@ -12,7 +12,7 @@ func TestEmployeeConversationQueriesRequireTenantAndOwnership(t *testing.T) {
 		t.Fatal(err)
 	}
 	src := string(b)
-	for _, want := range []string{"organization_id=$1", "($3 OR user_id=$4)", "messages WHERE organization_id=$1 AND conversation_id=$2"} {
+	for _, want := range []string{"organization_id=$1", "($3 OR user_id=$4)", "messages WHERE organization_id=$1 AND conversation_id=$2", "mode must be work or train"} {
 		if !strings.Contains(src, want) {
 			t.Fatalf("conversation isolation lost invariant %q", want)
 		}

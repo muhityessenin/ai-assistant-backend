@@ -15,6 +15,7 @@ import (
 	"github.com/example/ai-assistants-platform/internal/feedback"
 	"github.com/example/ai-assistants-platform/internal/knowledge"
 	"github.com/example/ai-assistants-platform/internal/platform/response"
+	"github.com/example/ai-assistants-platform/internal/training"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -39,17 +40,19 @@ type Engine struct {
 	assistants *assistant.Service
 	knowledge  knowledge.KnowledgeRetriever
 	feedback   *feedback.Service
+	training   *training.Service
 	providers  *providers.Registry
 	builder    ContextBuilder
 	log        *slog.Logger
 }
 
-func NewEngine(db *pgxpool.Pool, a *assistant.Service, k knowledge.KnowledgeRetriever, f *feedback.Service, p *providers.Registry, log *slog.Logger) *Engine {
-	return &Engine{db: db, assistants: a, knowledge: k, feedback: f, providers: p, builder: ContextBuilder{}, log: log}
+func NewEngine(db *pgxpool.Pool, a *assistant.Service, k knowledge.KnowledgeRetriever, f *feedback.Service, t *training.Service, p *providers.Registry, log *slog.Logger) *Engine {
+	return &Engine{db: db, assistants: a, knowledge: k, feedback: f, training: t, providers: p, builder: ContextBuilder{}, log: log}
 }
 func (e *Engine) Generate(ctx context.Context, req GenerateRequest) (<-chan StreamEvent, error) {
 	var assistantID uuid.UUID
-	err := e.db.QueryRow(ctx, `SELECT assistant_id FROM conversations WHERE organization_id=$1 AND id=$2 AND status='active' AND ($3 OR user_id=$4)`, req.Actor.OrganizationID, req.ConversationID, req.Actor.IsAdmin(), req.Actor.UserID).Scan(&assistantID)
+	var mode string
+	err := e.db.QueryRow(ctx, `SELECT assistant_id,mode FROM conversations WHERE organization_id=$1 AND id=$2 AND status='active' AND ($3 OR user_id=$4)`, req.Actor.OrganizationID, req.ConversationID, req.Actor.IsAdmin(), req.Actor.UserID).Scan(&assistantID, &mode)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, response.ErrNotFound
 	}
@@ -61,12 +64,20 @@ func (e *Engine) Generate(ctx context.Context, req GenerateRequest) (<-chan Stre
 		return nil, err
 	}
 	settings := asst.ParsedSettings()
+	var learnedID uuid.UUID
+	if mode == "train" {
+		learnedID, err = e.training.Learn(ctx, req.Actor.OrganizationID, assistantID, req.ConversationID, req.UserMessageID, req.Actor.UserID, req.Content)
+		if err != nil {
+			return nil, err
+		}
+	}
 	history, err := e.history(ctx, req, settings.History.MessageLimit)
 	if err != nil {
 		return nil, err
 	}
 	var chunks []knowledge.KnowledgeChunk
 	var examples []feedback.Example
+	var memories []training.Memory
 	g, gctx := errgroup.WithContext(ctx)
 	if settings.RAG.Enabled {
 		g.Go(func() error {
@@ -82,6 +93,11 @@ func (e *Engine) Generate(ctx context.Context, req GenerateRequest) (<-chan Stre
 			return x
 		})
 	}
+	g.Go(func() error {
+		var x error
+		memories, x = e.training.Retrieve(gctx, req.Actor.OrganizationID, assistantID, req.Content, 8, 0.35)
+		return x
+	})
 	if err = g.Wait(); err != nil {
 		return nil, fmt.Errorf("context retrieval: %w", err)
 	}
@@ -89,13 +105,13 @@ func (e *Engine) Generate(ctx context.Context, req GenerateRequest) (<-chan Stre
 	if err != nil {
 		return nil, err
 	}
-	messages := e.builder.Build(asst, history, chunks, examples, req.Content)
+	messages := e.builder.Build(asst, history, chunks, examples, memories, mode, req.Content)
 	stream, err := provider.StreamChat(ctx, providers.ChatRequest{Model: asst.Model, Messages: messages, Temperature: asst.Temperature, MaxTokens: asst.MaxOutputTokens})
 	if err != nil {
 		return nil, err
 	}
 	out := make(chan StreamEvent)
-	go e.relay(ctx, out, stream, req, asst, chunks)
+	go e.relay(ctx, out, stream, req, asst, chunks, memories, mode, learnedID)
 	return out, nil
 }
 func (e *Engine) history(ctx context.Context, req GenerateRequest, limit int) ([]HistoryMessage, error) {
@@ -114,7 +130,7 @@ func (e *Engine) history(ctx context.Context, req GenerateRequest, limit int) ([
 	}
 	return out, rows.Err()
 }
-func (e *Engine) relay(ctx context.Context, out chan StreamEvent, in <-chan providers.ChatChunk, req GenerateRequest, a assistant.Assistant, chunks []knowledge.KnowledgeChunk) {
+func (e *Engine) relay(ctx context.Context, out chan StreamEvent, in <-chan providers.ChatChunk, req GenerateRequest, a assistant.Assistant, chunks []knowledge.KnowledgeChunk, memories []training.Memory, mode string, learnedID uuid.UUID) {
 	defer close(out)
 	start := time.Now()
 	id := uuid.New()
@@ -162,7 +178,11 @@ func (e *Engine) relay(ctx context.Context, out chan StreamEvent, in <-chan prov
 	for i, c := range chunks {
 		src[i] = c.Source()
 	}
-	meta, _ := json.Marshal(map[string]any{"sources": src})
+	memoryIDs := make([]uuid.UUID, len(memories))
+	for i, memory := range memories {
+		memoryIDs[i] = memory.ID
+	}
+	meta, _ := json.Marshal(map[string]any{"sources": src, "conversation_mode": mode, "training_memory_ids": memoryIDs})
 	tx, err := e.db.Begin(ctx)
 	if err == nil {
 		_, err = tx.Exec(ctx, `INSERT INTO messages(id,organization_id,conversation_id,role,content,provider,model,input_tokens,output_tokens,total_tokens,latency_ms,metadata) VALUES($1,$2,$3,'assistant',$4,$5,$6,$7,$8,$9,$10,$11)`, id, req.Actor.OrganizationID, req.ConversationID, text.String(), a.Provider, a.Model, usage.InputTokens, usage.OutputTokens, usage.TotalTokens, time.Since(start).Milliseconds(), meta)
@@ -181,5 +201,9 @@ func (e *Engine) relay(ctx context.Context, out chan StreamEvent, in <-chan prov
 		return
 	}
 	e.log.Info("llm response", "provider", a.Provider, "model", a.Model, "latency_ms", time.Since(start).Milliseconds(), "input_tokens", usage.InputTokens, "output_tokens", usage.OutputTokens)
-	send(StreamEvent{Type: "message_complete", Data: map[string]any{"message_id": id, "usage": usage}})
+	data := map[string]any{"message_id": id, "usage": usage, "mode": mode}
+	if learnedID != uuid.Nil {
+		data["training_entry_id"] = learnedID
+	}
+	send(StreamEvent{Type: "message_complete", Data: data})
 }

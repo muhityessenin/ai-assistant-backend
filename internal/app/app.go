@@ -23,6 +23,7 @@ import (
 	mw "github.com/example/ai-assistants-platform/internal/platform/middleware"
 	"github.com/example/ai-assistants-platform/internal/platform/response"
 	"github.com/example/ai-assistants-platform/internal/storage"
+	"github.com/example/ai-assistants-platform/internal/training"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -54,8 +55,9 @@ func New(cfg config.Config, db *pgxpool.Pool, log *slog.Logger) (*App, error) {
 	a.assistants = assistant.NewService(db, cfg.DefaultProvider, cfg.DefaultChatModel)
 	a.knowledge = knowledge.NewService(db, st, cfg.MaxUploadBytes)
 	a.feedback = feedback.NewService(db, openai, cfg.AutoApproveAdminFeedback)
+	trainingService := training.NewService(db, openai)
 	retriever := knowledge.NewRetriever(db, openai)
-	engine := ai.NewEngine(db, a.assistants, retriever, a.feedback, reg, log)
+	engine := ai.NewEngine(db, a.assistants, retriever, a.feedback, trainingService, reg, log)
 	a.conversations = conversation.NewService(db, a.assistants, engine)
 	a.processor = knowledge.NewProcessor(db, st, openai, knowledge.Chunker{Size: cfg.ChunkSize, Overlap: cfg.ChunkOverlap}, cfg.DocumentWorkers, log)
 	a.knowledge.SetProcessor(a.processor)
@@ -619,14 +621,14 @@ func (a *App) createConversation(w http.ResponseWriter, r *http.Request) {
 		fail(w, e)
 		return
 	}
-	var in struct{ Title string }
+	var in struct{ Title, Mode string }
 	if r.ContentLength > 0 {
 		if e = response.Decode(w, r, &in, 1<<20); e != nil {
 			fail(w, e)
 			return
 		}
 	}
-	x, e := a.conversations.Create(r.Context(), actor(r), id, in.Title)
+	x, e := a.conversations.Create(r.Context(), actor(r), id, in.Title, in.Mode)
 	if e != nil {
 		fail(w, e)
 		return
@@ -666,12 +668,15 @@ func (a *App) renameConversation(w http.ResponseWriter, r *http.Request) {
 		fail(w, e)
 		return
 	}
-	var in struct{ Title string }
+	var in struct {
+		Title *string `json:"title"`
+		Mode  *string `json:"mode"`
+	}
 	if e = response.Decode(w, r, &in, 1<<20); e != nil {
 		fail(w, e)
 		return
 	}
-	x, e := a.conversations.Rename(r.Context(), actor(r), id, in.Title)
+	x, e := a.conversations.Update(r.Context(), actor(r), id, in.Title, in.Mode)
 	if e != nil {
 		fail(w, e)
 		return

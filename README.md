@@ -46,6 +46,7 @@ internal/assistant      dynamic assistant configuration and access
 internal/conversation   tenant/owner-scoped conversations and messages
 internal/knowledge      parsers, chunker, workers and RAG retrieval
 internal/feedback       ratings, corrections, moderation and retrieval
+internal/training       persistent chat lessons and semantic memory retrieval
 internal/ai             context builder and streaming orchestrator
 internal/ai/providers   provider interface and OpenAI adapter
 internal/storage        storage interface and local implementation
@@ -94,8 +95,13 @@ in production unless self-service organization creation is intended.
    202; poll the document until `status=ready` or inspect `error_message`.
 3. Create an assistant configuration, attach knowledge, and grant users access (or
    enable availability for all users).
-4. Create a conversation and post a message. SSE emits `message_start`, `sources`,
-   `content_delta`, and `message_complete`.
+4. Create a conversation and post a message. A conversation has a persistent
+   `mode`: `work` for normal answers or `train` for teaching through chat. In train
+   mode each user message is embedded as tenant- and assistant-isolated memory;
+   relevant memories are retrieved in future work and train chats. Change the mode
+   with `PATCH /api/v1/conversations/{id}` and `{\"mode\":\"train\"}`. This is
+   application-level RAG memory, not provider model-weight fine-tuning. SSE emits
+   `message_start`, `sources`, `content_delta`, and `message_complete`.
 5. Submit feedback. Approved corrections are embedded and retrieved for similar
    future questions.
 
