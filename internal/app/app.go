@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"mime/multipart"
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -38,6 +39,7 @@ type App struct {
 	knowledge     *knowledge.Service
 	conversations *conversation.Service
 	feedback      *feedback.Service
+	transcriber   providers.Transcriber
 	processor     *knowledge.Processor
 	router        http.Handler
 }
@@ -55,6 +57,7 @@ func New(cfg config.Config, db *pgxpool.Pool, log *slog.Logger) (*App, error) {
 	a.assistants = assistant.NewService(db, cfg.DefaultProvider, cfg.DefaultChatModel)
 	a.knowledge = knowledge.NewService(db, st, cfg.MaxUploadBytes)
 	a.feedback = feedback.NewService(db, openai, cfg.AutoApproveAdminFeedback)
+	a.transcriber = openai
 	trainingService := training.NewService(db, openai)
 	retriever := knowledge.NewRetriever(db, openai)
 	engine := ai.NewEngine(db, a.assistants, retriever, a.feedback, trainingService, reg, log)
@@ -99,6 +102,7 @@ func (a *App) routes() http.Handler {
 		r.Group(func(r chi.Router) {
 			r.Use(func(n http.Handler) http.Handler { return mw.Authenticate(a.auth, n) })
 			r.Get("/me", a.me)
+			r.With(mw.NewLimiter(a.cfg.ChatRateRequests, a.cfg.RateWindow).Middleware).Post("/audio/transcriptions", a.transcribeAudio)
 			r.Route("/users", func(r chi.Router) {
 				r.Get("/", a.listUsers)
 				r.Post("/", a.createUser)
@@ -165,6 +169,39 @@ func (a *App) ready(w http.ResponseWriter, r *http.Request) {
 	response.JSON(w, 200, map[string]any{"status": "ready", "migration_version": v}, nil)
 }
 func actor(r *http.Request) auth.Actor { x, _ := mw.Actor(r.Context()); return x }
+
+func (a *App) transcribeAudio(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, a.cfg.MaxAudioBytes+(1<<20))
+	if err := r.ParseMultipartForm(a.cfg.MaxAudioBytes); err != nil {
+		fail(w, response.E(422, "INVALID_AUDIO", "Invalid or oversized audio upload"))
+		return
+	}
+	if r.MultipartForm != nil {
+		defer r.MultipartForm.RemoveAll()
+	}
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		fail(w, response.E(422, "AUDIO_REQUIRED", "Multipart field 'file' is required"))
+		return
+	}
+	defer file.Close()
+	if header.Size <= 0 || header.Size > a.cfg.MaxAudioBytes {
+		fail(w, response.E(422, "INVALID_AUDIO", "Audio file is empty or too large"))
+		return
+	}
+	allowed := map[string]bool{".flac": true, ".mp3": true, ".mp4": true, ".mpeg": true, ".mpga": true, ".m4a": true, ".ogg": true, ".wav": true, ".webm": true}
+	if !allowed[strings.ToLower(filepath.Ext(header.Filename))] {
+		fail(w, response.E(422, "UNSUPPORTED_AUDIO", "Unsupported audio format"))
+		return
+	}
+	text, err := a.transcriber.Transcribe(r.Context(), a.cfg.TranscriptionModel, header.Filename, header.Header.Get("Content-Type"), file)
+	if err != nil {
+		a.log.Error("audio transcription", "error", err, "user_id", actor(r).UserID)
+		fail(w, response.E(502, "TRANSCRIPTION_FAILED", "Audio transcription failed"))
+		return
+	}
+	ok(w, map[string]string{"text": text})
+}
 func idParam(r *http.Request, name string) (uuid.UUID, error) {
 	id, err := uuid.Parse(chi.URLParam(r, name))
 	if err != nil {

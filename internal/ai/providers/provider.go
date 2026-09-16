@@ -3,6 +3,7 @@ package providers
 import (
 	"context"
 	"fmt"
+	"io"
 	"sync"
 )
 
@@ -30,6 +31,9 @@ type ChatChunk struct {
 type Provider interface {
 	StreamChat(context.Context, ChatRequest) (<-chan ChatChunk, error)
 	Embed(context.Context, []string) ([][]float32, error)
+}
+type Transcriber interface {
+	Transcribe(context.Context, string, string, string, io.Reader) (string, error)
 }
 type Registry struct {
 	mu sync.RWMutex

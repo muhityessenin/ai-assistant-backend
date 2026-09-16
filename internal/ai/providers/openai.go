@@ -8,7 +8,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
+	"net/textproto"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -136,6 +139,69 @@ func (o *OpenAI) Embed(ctx context.Context, texts []string) ([][]float32, error)
 		}
 	}
 	return out, nil
+}
+func (o *OpenAI) Transcribe(ctx context.Context, model, filename, contentType string, audio io.Reader) (string, error) {
+	if o.key == "" {
+		return "", errors.New("OPENAI_API_KEY is not configured")
+	}
+	if strings.TrimSpace(model) == "" {
+		return "", errors.New("transcription model is not configured")
+	}
+	filename = filepath.Base(filename)
+	if filename == "." || filename == "" {
+		filename = "voice-message.webm"
+	}
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	reader, writer := io.Pipe()
+	form := multipart.NewWriter(writer)
+	go func() {
+		header := make(textproto.MIMEHeader)
+		safeName := strings.ReplaceAll(filename, `"`, "'")
+		header.Set("Content-Disposition", fmt.Sprintf(`form-data; name="file"; filename="%s"`, safeName))
+		header.Set("Content-Type", contentType)
+		part, err := form.CreatePart(header)
+		if err == nil {
+			_, err = io.Copy(part, audio)
+		}
+		if err == nil {
+			err = form.WriteField("model", model)
+		}
+		if err == nil {
+			err = form.WriteField("response_format", "json")
+		}
+		if closeErr := form.Close(); err == nil {
+			err = closeErr
+		}
+		_ = writer.CloseWithError(err)
+	}()
+	req, err := http.NewRequestWithContext(ctx, "POST", o.base+"/audio/transcriptions", reader)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+o.key)
+	req.Header.Set("Content-Type", form.FormDataContentType())
+	resp, err := o.client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode/100 != 2 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 8192))
+		return "", fmt.Errorf("openai transcription status %d: %s", resp.StatusCode, sanitize(body))
+	}
+	var result struct {
+		Text string `json:"text"`
+	}
+	if err = json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", err
+	}
+	result.Text = strings.TrimSpace(result.Text)
+	if result.Text == "" {
+		return "", errors.New("transcription is empty")
+	}
+	return result.Text, nil
 }
 func (o *OpenAI) headers(r *http.Request) {
 	r.Header.Set("Authorization", "Bearer "+o.key)

@@ -71,6 +71,7 @@ the selected assistant. Composite database keys reinforce tenant relationships.
 - `POSTGRES_*` and `DATABASE_URL`; keep `postgres:5432` inside Compose.
 - JWT TTLs, `PUBLIC_REGISTRATION`, and idempotent `BOOTSTRAP_*` owner creation.
 - `OPENAI_*`, default provider/model, and LLM timeout.
+- `OPENAI_TRANSCRIPTION_MODEL` and `MAX_AUDIO_MB` for authenticated voice input.
 - Upload, worker, chunk, RAG, feedback moderation, and rate-limit settings.
 
 Embeddings are centrally set to 1536 dimensions. The OpenAI adapter requests that
@@ -102,6 +103,9 @@ in production unless self-service organization creation is intended.
    with `PATCH /api/v1/conversations/{id}` and `{\"mode\":\"train\"}`. This is
    application-level RAG memory, not provider model-weight fine-tuning. SSE emits
    `message_start`, `sources`, `content_delta`, and `message_complete`.
+   Browser voice input is recorded as WebM, MP4, or OGG and posted to
+   `POST /api/v1/audio/transcriptions`; the authenticated endpoint returns text
+   which the user can review before sending as a normal work or train message.
 5. Submit feedback. Approved corrections are embedded and retrieved for similar
    future questions.
 

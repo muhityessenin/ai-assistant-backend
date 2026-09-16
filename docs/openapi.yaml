@@ -18,6 +18,7 @@ paths:
   /auth/refresh: {post: {security: [], summary: Rotate refresh token, responses: {'200': {description: Tokens}}}}
   /auth/logout: {post: {security: [], summary: Revoke refresh token, responses: {'204': {description: Logged out}}}}
   /me: {get: {summary: Current user, responses: {'200': {description: Current user}}}}
+  /audio/transcriptions: {post: {summary: Transcribe an authenticated multipart audio file, responses: {'200': {description: Transcribed text}, '422': {description: Invalid audio}, '502': {description: Provider transcription failed}}}}
   /users: {get: {summary: List users, responses: {'200': {description: Page}}}, post: {summary: Create user, responses: {'201': {description: Created}}}}
   /users/{id}:
     parameters: [{name: id, in: path, required: true, schema: {type: string, format: uuid}}]

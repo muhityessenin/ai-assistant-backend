@@ -14,17 +14,17 @@ import (
 const EmbeddingDimensions = 1536
 
 type Config struct {
-	Env, Host, Port, DatabaseURL, JWTSecret                                               string
-	AccessTTL, RefreshTTL, ReadTimeout, WriteTimeout, IdleTimeout, LLMTimeout             time.Duration
-	OpenAIKey, OpenAIBaseURL, DefaultProvider, DefaultChatModel, EmbeddingModel           string
-	UploadDir                                                                             string
-	MaxUploadBytes                                                                        int64
-	DocumentWorkers, ChunkSize, ChunkOverlap, DefaultTopK, RateRequests, ChatRateRequests int
-	RateWindow                                                                            time.Duration
-	CORS                                                                                  []string
-	LogLevel                                                                              string
-	PublicRegistration, AutoApproveAdminFeedback                                          bool
-	BootstrapEmail, BootstrapPassword, BootstrapOrg                                       string
+	Env, Host, Port, DatabaseURL, JWTSecret                                                         string
+	AccessTTL, RefreshTTL, ReadTimeout, WriteTimeout, IdleTimeout, LLMTimeout                       time.Duration
+	OpenAIKey, OpenAIBaseURL, DefaultProvider, DefaultChatModel, EmbeddingModel, TranscriptionModel string
+	UploadDir                                                                                       string
+	MaxUploadBytes, MaxAudioBytes                                                                   int64
+	DocumentWorkers, ChunkSize, ChunkOverlap, DefaultTopK, RateRequests, ChatRateRequests           int
+	RateWindow                                                                                      time.Duration
+	CORS                                                                                            []string
+	LogLevel                                                                                        string
+	PublicRegistration, AutoApproveAdminFeedback                                                    bool
+	BootstrapEmail, BootstrapPassword, BootstrapOrg                                                 string
 }
 
 func Load() (cfg Config, err error) {
@@ -40,8 +40,8 @@ func Load() (cfg Config, err error) {
 		DatabaseURL: os.Getenv("DATABASE_URL"), JWTSecret: os.Getenv("JWT_SECRET"), AccessTTL: duration("JWT_ACCESS_TTL", 15*time.Minute), RefreshTTL: duration("JWT_REFRESH_TTL", 30*24*time.Hour),
 		ReadTimeout: duration("HTTP_READ_TIMEOUT", 15*time.Second), WriteTimeout: duration("HTTP_WRITE_TIMEOUT", 0), IdleTimeout: duration("HTTP_IDLE_TIMEOUT", 60*time.Second), LLMTimeout: duration("LLM_TIMEOUT", 2*time.Minute),
 		OpenAIKey: os.Getenv("OPENAI_API_KEY"), OpenAIBaseURL: strings.TrimRight(env("OPENAI_BASE_URL", "https://api.openai.com/v1"), "/"),
-		DefaultProvider: env("DEFAULT_AI_PROVIDER", "openai"), DefaultChatModel: env("OPENAI_CHAT_MODEL", "gpt-4o-mini"), EmbeddingModel: env("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small"),
-		UploadDir: env("UPLOAD_DIR", "./data/uploads"), MaxUploadBytes: int64(integer("MAX_UPLOAD_MB", 50)) << 20,
+		DefaultProvider: env("DEFAULT_AI_PROVIDER", "openai"), DefaultChatModel: env("OPENAI_CHAT_MODEL", "gpt-4o-mini"), EmbeddingModel: env("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small"), TranscriptionModel: env("OPENAI_TRANSCRIPTION_MODEL", "gpt-4o-mini-transcribe"),
+		UploadDir: env("UPLOAD_DIR", "./data/uploads"), MaxUploadBytes: int64(integer("MAX_UPLOAD_MB", 50)) << 20, MaxAudioBytes: int64(integer("MAX_AUDIO_MB", 20)) << 20,
 		DocumentWorkers: integer("DOCUMENT_WORKERS", 2), ChunkSize: integer("RAG_CHUNK_SIZE", 800), ChunkOverlap: integer("RAG_CHUNK_OVERLAP", 150), DefaultTopK: integer("RAG_DEFAULT_TOP_K", 8),
 		RateRequests: integer("RATE_LIMIT_REQUESTS", 100), ChatRateRequests: integer("CHAT_RATE_LIMIT_REQUESTS", 20), RateWindow: duration("RATE_LIMIT_WINDOW", time.Minute),
 		CORS: csv("CORS_ALLOWED_ORIGINS"), LogLevel: env("LOG_LEVEL", "info"), PublicRegistration: boolean("PUBLIC_REGISTRATION", false), AutoApproveAdminFeedback: boolean("AUTO_APPROVE_ADMIN_FEEDBACK", true),
@@ -58,6 +58,9 @@ func Load() (cfg Config, err error) {
 	}
 	if c.DocumentWorkers < 1 {
 		return c, errors.New("DOCUMENT_WORKERS must be positive")
+	}
+	if c.MaxAudioBytes <= 0 {
+		return c, errors.New("MAX_AUDIO_MB must be positive")
 	}
 	if (c.BootstrapEmail != "" || c.BootstrapPassword != "" || c.BootstrapOrg != "") && (c.BootstrapEmail == "" || len(c.BootstrapPassword) < 12 || c.BootstrapOrg == "") {
 		return c, errors.New("all bootstrap values are required and bootstrap password must be at least 12 characters")

@@ -144,6 +144,12 @@ EMPLOYEE_REFRESH="$(json_value "$TMP_DIR/employee-login.json" '.data.tokens.refr
 say 'GET /me — employee'
 json_call GET "$API/me" 200 "$TMP_DIR/employee-me.json" "$EMPLOYEE_ACCESS"
 
+say 'POST /audio/transcriptions without file — expected 422 validation'
+transcription_status="$(curl -sS -o "$TMP_DIR/transcription-validation.json" -w '%{http_code}' -X POST \
+  -H "Authorization: Bearer $EMPLOYEE_ACCESS" "$API/audio/transcriptions")"
+[[ "$transcription_status" == 422 ]] || { echo "Expected HTTP 422, got $transcription_status"; show "$TMP_DIR/transcription-validation.json"; exit 1; }
+show "$TMP_DIR/transcription-validation.json"
+
 say 'POST /knowledge-bases/ — create'
 json_call POST "$API/knowledge-bases/" 201 "$TMP_DIR/kb-create.json" "$OWNER_ACCESS" \
   "$(jq -nc --arg n "Smoke KB $RUN_ID" '{name:$n,description:"Temporary endpoint test knowledge base"}')"
