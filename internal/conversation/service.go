@@ -34,10 +34,17 @@ type Message struct {
 	LatencyMS                              int64
 	Metadata                               json.RawMessage
 	CreatedAt                              time.Time
+	Feedback                               *MessageFeedback
+}
+
+type MessageFeedback struct {
+	ID     uuid.UUID `json:"id"`
+	Rating int16     `json:"rating"`
+	Status string    `json:"status"`
 }
 
 func (m Message) MarshalJSON() ([]byte, error) {
-	return json.Marshal(map[string]any{"id": m.ID, "role": m.Role, "content": m.Content, "provider": m.Provider, "model": m.Model, "input_tokens": m.InputTokens, "output_tokens": m.OutputTokens, "total_tokens": m.TotalTokens, "latency_ms": m.LatencyMS, "metadata": json.RawMessage(m.Metadata), "created_at": m.CreatedAt})
+	return json.Marshal(map[string]any{"id": m.ID, "role": m.Role, "content": m.Content, "provider": m.Provider, "model": m.Model, "input_tokens": m.InputTokens, "output_tokens": m.OutputTokens, "total_tokens": m.TotalTokens, "latency_ms": m.LatencyMS, "metadata": json.RawMessage(m.Metadata), "feedback": m.Feedback, "created_at": m.CreatedAt})
 }
 
 type Detail struct {
@@ -107,15 +114,21 @@ func (s *Service) Get(ctx context.Context, a auth.Actor, id uuid.UUID) (Detail, 
 	if err != nil {
 		return d, err
 	}
-	rows, err := s.db.Query(ctx, `SELECT id,role,content,provider,model,input_tokens,output_tokens,total_tokens,latency_ms,metadata,created_at FROM messages WHERE organization_id=$1 AND conversation_id=$2 ORDER BY created_at,id`, a.OrganizationID, id)
+	rows, err := s.db.Query(ctx, `SELECT m.id,m.role,m.content,m.provider,m.model,m.input_tokens,m.output_tokens,m.total_tokens,m.latency_ms,m.metadata,m.created_at,mf.id,mf.rating,mf.status FROM messages m LEFT JOIN message_feedback mf ON mf.organization_id=m.organization_id AND mf.message_id=m.id AND mf.user_id=$3 WHERE m.organization_id=$1 AND m.conversation_id=$2 ORDER BY m.created_at,m.id`, a.OrganizationID, id, a.UserID)
 	if err != nil {
 		return d, err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var m Message
-		if err = rows.Scan(&m.ID, &m.Role, &m.Content, &m.Provider, &m.Model, &m.InputTokens, &m.OutputTokens, &m.TotalTokens, &m.LatencyMS, &m.Metadata, &m.CreatedAt); err != nil {
+		var feedbackID *uuid.UUID
+		var feedbackRating *int16
+		var feedbackStatus *string
+		if err = rows.Scan(&m.ID, &m.Role, &m.Content, &m.Provider, &m.Model, &m.InputTokens, &m.OutputTokens, &m.TotalTokens, &m.LatencyMS, &m.Metadata, &m.CreatedAt, &feedbackID, &feedbackRating, &feedbackStatus); err != nil {
 			return d, err
+		}
+		if feedbackID != nil && feedbackRating != nil && feedbackStatus != nil {
+			m.Feedback = &MessageFeedback{ID: *feedbackID, Rating: *feedbackRating, Status: *feedbackStatus}
 		}
 		d.Messages = append(d.Messages, m)
 	}

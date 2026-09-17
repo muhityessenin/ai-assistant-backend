@@ -292,12 +292,25 @@ say 'POST /messages/{id}/feedback — employee correction'
 json_call POST "$API/messages/$MESSAGE_ID/feedback" 201 "$TMP_DIR/feedback-create.json" "$EMPLOYEE_ACCESS" \
   '{"rating":-1,"comment":"Mention board approval explicitly","corrected_answer":"Perform downside, liquidity, scenario and legal reviews; keep leverage at or below 2.5 and obtain board approval."}'
 FEEDBACK_ID="$(json_value "$TMP_DIR/feedback-create.json" '.data.id')"
+jq -e --arg conversation "$CONVERSATION_ID" --arg message "$MESSAGE_ID" \
+  '.data | select(.conversation_id==$conversation and .message_id==$message and .conversation_title != "" and .message_content != "")' \
+  "$TMP_DIR/feedback-create.json" >/dev/null
+
+say 'GET /conversations/{id} — persisted current-user feedback state'
+json_call GET "$API/conversations/$CONVERSATION_ID" 200 "$TMP_DIR/conversation-after-feedback.json" "$EMPLOYEE_ACCESS"
+jq -e --arg id "$MESSAGE_ID" '.data.messages[] | select(.id==$id and .feedback.rating == -1 and .feedback.id != "")' "$TMP_DIR/conversation-after-feedback.json" >/dev/null
 
 say 'GET /feedback/ — owner list with all filters'
 json_call GET "$API/feedback/?page=1&limit=20&assistant_id=$ASSISTANT_ID&user_id=$EMPLOYEE_ID&rating=-1&status=pending" 200 "$TMP_DIR/feedback-list.json" "$OWNER_ACCESS"
+jq -e --arg id "$FEEDBACK_ID" --arg conversation "$CONVERSATION_ID" --arg message "$MESSAGE_ID" \
+  '.data[] | select(.id==$id and .conversation_id==$conversation and .message_id==$message and .conversation_title != "" and .message_content != "")' \
+  "$TMP_DIR/feedback-list.json" >/dev/null
 
 say 'GET /feedback/{id}'
 json_call GET "$API/feedback/$FEEDBACK_ID" 200 "$TMP_DIR/feedback-get.json" "$OWNER_ACCESS"
+jq -e --arg conversation "$CONVERSATION_ID" --arg message "$MESSAGE_ID" \
+  '.data | select(.conversation_id==$conversation and .message_id==$message and .conversation_title != "" and .message_content != "")' \
+  "$TMP_DIR/feedback-get.json" >/dev/null
 
 say 'PATCH /feedback/{id} — approve correction'
 json_call PATCH "$API/feedback/$FEEDBACK_ID" 200 "$TMP_DIR/feedback-approve.json" "$OWNER_ACCESS" '{"status":"approved"}'
