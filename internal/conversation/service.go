@@ -77,6 +77,9 @@ func (s *Service) Create(ctx context.Context, a auth.Actor, assistantID uuid.UUI
 	if mode != "work" && mode != "train" {
 		return Conversation{}, response.E(422, "VALIDATION_ERROR", "mode must be work or train")
 	}
+	if mode == "train" && !a.CanTrainAssistant() {
+		return Conversation{}, response.E(403, "TRAINING_FORBIDDEN", "You do not have permission to train assistants")
+	}
 	var c Conversation
 	err := s.db.QueryRow(ctx, `INSERT INTO conversations(organization_id,assistant_id,user_id,title,mode) VALUES($1,$2,$3,$4,$5) RETURNING id,assistant_id,user_id,title,status,mode,created_at,updated_at`, a.OrganizationID, assistantID, a.UserID, title, mode).Scan(&c.ID, &c.AssistantID, &c.UserID, &c.Title, &c.Status, &c.Mode, &c.CreatedAt, &c.UpdatedAt)
 	return c, err
@@ -148,6 +151,9 @@ func (s *Service) Update(ctx context.Context, a auth.Actor, id uuid.UUID, title,
 	if mode != nil && *mode != "work" && *mode != "train" {
 		return Conversation{}, response.E(422, "VALIDATION_ERROR", "mode must be work or train")
 	}
+	if mode != nil && *mode == "train" && !a.CanTrainAssistant() {
+		return Conversation{}, response.E(403, "TRAINING_FORBIDDEN", "You do not have permission to train assistants")
+	}
 	var c Conversation
 	err := s.db.QueryRow(ctx, `UPDATE conversations SET title=COALESCE($5,title),mode=COALESCE($6,mode),updated_at=now() WHERE organization_id=$1 AND id=$2 AND status='active' AND ($3 OR user_id=$4) RETURNING id,assistant_id,user_id,title,status,mode,created_at,updated_at`, a.OrganizationID, id, a.IsAdmin(), a.UserID, title, mode).Scan(&c.ID, &c.AssistantID, &c.UserID, &c.Title, &c.Status, &c.Mode, &c.CreatedAt, &c.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -167,13 +173,16 @@ func (s *Service) Send(ctx context.Context, a auth.Actor, id uuid.UUID, content 
 	if content == "" || len(content) > 100000 {
 		return nil, response.E(422, "VALIDATION_ERROR", "Message content is required and must be at most 100000 characters")
 	}
-	var exists bool
-	err := s.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM conversations WHERE organization_id=$1 AND id=$2 AND status='active' AND ($3 OR user_id=$4))`, a.OrganizationID, id, a.IsAdmin(), a.UserID).Scan(&exists)
+	var mode string
+	err := s.db.QueryRow(ctx, `SELECT mode FROM conversations WHERE organization_id=$1 AND id=$2 AND status='active' AND ($3 OR user_id=$4)`, a.OrganizationID, id, a.IsAdmin(), a.UserID).Scan(&mode)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, response.ErrNotFound
+	}
 	if err != nil {
 		return nil, err
 	}
-	if !exists {
-		return nil, response.ErrNotFound
+	if mode == "train" && !a.CanTrainAssistant() {
+		return nil, response.E(403, "TRAINING_FORBIDDEN", "You do not have permission to train assistants")
 	}
 	mid := uuid.New()
 	tx, err := s.db.Begin(ctx)

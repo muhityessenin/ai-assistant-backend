@@ -39,6 +39,8 @@ type App struct {
 	knowledge     *knowledge.Service
 	conversations *conversation.Service
 	feedback      *feedback.Service
+	training      *training.Service
+	engine        *ai.Engine
 	transcriber   providers.Transcriber
 	processor     *knowledge.Processor
 	router        http.Handler
@@ -59,8 +61,10 @@ func New(cfg config.Config, db *pgxpool.Pool, log *slog.Logger) (*App, error) {
 	a.feedback = feedback.NewService(db, openai, cfg.AutoApproveAdminFeedback)
 	a.transcriber = openai
 	trainingService := training.NewService(db, openai)
+	a.training = trainingService
 	retriever := knowledge.NewRetriever(db, openai)
 	engine := ai.NewEngine(db, a.assistants, retriever, a.feedback, trainingService, reg, log)
+	a.engine = engine
 	a.conversations = conversation.NewService(db, a.assistants, engine)
 	a.processor = knowledge.NewProcessor(db, st, openai, knowledge.Chunker{Size: cfg.ChunkSize, Overlap: cfg.ChunkOverlap}, cfg.DocumentWorkers, log)
 	a.knowledge.SetProcessor(a.processor)
@@ -99,6 +103,10 @@ func (a *App) routes() http.Handler {
 			r.Post("/refresh", a.refresh)
 			r.Post("/logout", a.logout)
 		})
+		r.Route("/public", func(r chi.Router) {
+			r.Get("/assistants/{publicationID}", a.getPublicAssistant)
+			r.With(mw.NewLimiter(a.cfg.ChatRateRequests, a.cfg.RateWindow).Middleware).Post("/assistants/{publicationID}/messages", a.sendPublicMessage)
+		})
 		r.Group(func(r chi.Router) {
 			r.Use(func(n http.Handler) http.Handler { return mw.Authenticate(a.auth, n) })
 			r.Get("/me", a.me)
@@ -116,8 +124,12 @@ func (a *App) routes() http.Handler {
 				r.Get("/{id}", a.getAssistant)
 				r.Patch("/{id}", a.updateAssistant)
 				r.Delete("/{id}", a.deleteAssistant)
+				r.Get("/{id}/knowledge-bases", a.listAssistantKBs)
 				r.Post("/{id}/knowledge-bases/{kbID}", a.attachKB)
 				r.Delete("/{id}/knowledge-bases/{kbID}", a.detachKB)
+				r.Get("/{id}/publication", a.getAssistantPublication)
+				r.Post("/{id}/publication", a.publishAssistant)
+				r.Delete("/{id}/publication", a.unpublishAssistant)
 				r.Get("/{id}/users", a.listAssistantUsers)
 				r.Post("/{id}/users/{userID}", a.grantAssistant)
 				r.Delete("/{id}/users/{userID}", a.revokeAssistant)
@@ -148,6 +160,13 @@ func (a *App) routes() http.Handler {
 				r.Get("/{id}", a.getFeedback)
 				r.Patch("/{id}", a.moderateFeedback)
 				r.Delete("/{id}", a.deleteFeedback)
+			})
+			r.Route("/training-entries", func(r chi.Router) {
+				r.Use(mw.RequireAdmin)
+				r.Get("/", a.listTrainingEntries)
+				r.Get("/{id}", a.getTrainingEntry)
+				r.Patch("/{id}", a.reviewTrainingEntry)
+				r.Delete("/{id}", a.deleteTrainingEntry)
 			})
 			r.With(mw.RequireAdmin).Get("/admin/stats", a.stats)
 		})
@@ -315,12 +334,15 @@ func (a *App) listUsers(w http.ResponseWriter, r *http.Request) {
 	response.JSON(w, 200, x, map[string]any{"page": p, "limit": l, "total": n})
 }
 func (a *App) createUser(w http.ResponseWriter, r *http.Request) {
-	var in struct{ Name, Email, Password, Role string }
+	var in struct {
+		Name, Email, Password, Role string
+		CanTrain                    bool `json:"can_train"`
+	}
 	if e := response.Decode(w, r, &in, 1<<20); e != nil {
 		fail(w, e)
 		return
 	}
-	x, e := a.auth.CreateUser(r.Context(), actor(r), in.Name, in.Email, in.Password, in.Role)
+	x, e := a.auth.CreateUser(r.Context(), actor(r), in.Name, in.Email, in.Password, in.Role, in.CanTrain)
 	if e != nil {
 		fail(w, e)
 		return
@@ -346,12 +368,15 @@ func (a *App) updateUser(w http.ResponseWriter, r *http.Request) {
 		fail(w, e)
 		return
 	}
-	var in struct{ Name, Role, Status *string }
+	var in struct {
+		Name, Role, Status *string
+		CanTrain           *bool `json:"can_train"`
+	}
 	if e = response.Decode(w, r, &in, 1<<20); e != nil {
 		fail(w, e)
 		return
 	}
-	x, e := a.auth.UpdateUser(r.Context(), actor(r), id, in.Name, in.Role, in.Status)
+	x, e := a.auth.UpdateUser(r.Context(), actor(r), id, in.Name, in.Role, in.Status, in.CanTrain)
 	if e != nil {
 		fail(w, e)
 		return
@@ -372,10 +397,16 @@ func (a *App) deleteUser(w http.ResponseWriter, r *http.Request) {
 
 func (a *App) listAssistants(w http.ResponseWriter, r *http.Request) {
 	p, l := page(r)
-	x, n, e := a.assistants.List(r.Context(), actor(r), p, l, r.URL.Query().Get("search"))
+	current := actor(r)
+	x, n, e := a.assistants.List(r.Context(), current, p, l, r.URL.Query().Get("search"))
 	if e != nil {
 		fail(w, e)
 		return
+	}
+	if !current.IsAdmin() {
+		for i := range x {
+			x[i] = x[i].Redacted()
+		}
 	}
 	response.JSON(w, 200, x, map[string]any{"page": p, "limit": l, "total": n})
 }
@@ -409,10 +440,14 @@ func (a *App) getAssistant(w http.ResponseWriter, r *http.Request) {
 		fail(w, e)
 		return
 	}
-	x, e := a.assistants.Get(r.Context(), actor(r), id)
+	current := actor(r)
+	x, e := a.assistants.Get(r.Context(), current, id)
 	if e != nil {
 		fail(w, e)
 		return
+	}
+	if !current.IsAdmin() {
+		x = x.Redacted()
 	}
 	ok(w, x)
 }
@@ -473,6 +508,107 @@ func (a *App) kbLink(w http.ResponseWriter, r *http.Request, attach bool) {
 }
 func (a *App) attachKB(w http.ResponseWriter, r *http.Request) { a.kbLink(w, r, true) }
 func (a *App) detachKB(w http.ResponseWriter, r *http.Request) { a.kbLink(w, r, false) }
+func (a *App) listAssistantKBs(w http.ResponseWriter, r *http.Request) {
+	id, e := idParam(r, "id")
+	if e != nil {
+		fail(w, e)
+		return
+	}
+	x, e := a.assistants.ListKBs(r.Context(), actor(r), id)
+	if e != nil {
+		fail(w, e)
+		return
+	}
+	ok(w, x)
+}
+func (a *App) publishAssistant(w http.ResponseWriter, r *http.Request) {
+	id, e := idParam(r, "id")
+	if e != nil {
+		fail(w, e)
+		return
+	}
+	x, e := a.assistants.Publish(r.Context(), actor(r), id)
+	if e != nil {
+		fail(w, e)
+		return
+	}
+	response.JSON(w, 201, x, nil)
+}
+func (a *App) getAssistantPublication(w http.ResponseWriter, r *http.Request) {
+	id, e := idParam(r, "id")
+	if e != nil {
+		fail(w, e)
+		return
+	}
+	x, e := a.assistants.GetAssistantPublication(r.Context(), actor(r), id)
+	if e != nil {
+		fail(w, e)
+		return
+	}
+	ok(w, x)
+}
+func (a *App) unpublishAssistant(w http.ResponseWriter, r *http.Request) {
+	id, e := idParam(r, "id")
+	if e == nil {
+		e = a.assistants.Unpublish(r.Context(), actor(r), id)
+	}
+	if e != nil {
+		fail(w, e)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+func (a *App) getPublicAssistant(w http.ResponseWriter, r *http.Request) {
+	id, e := idParam(r, "publicationID")
+	if e != nil {
+		fail(w, e)
+		return
+	}
+	x, e := a.assistants.GetPublication(r.Context(), id)
+	if e != nil {
+		fail(w, e)
+		return
+	}
+	ok(w, map[string]any{"id": x.ID, "assistant_name": x.AssistantName, "description": x.Description})
+}
+func (a *App) sendPublicMessage(w http.ResponseWriter, r *http.Request) {
+	id, e := idParam(r, "publicationID")
+	if e != nil {
+		fail(w, e)
+		return
+	}
+	publication, e := a.assistants.GetPublication(r.Context(), id)
+	if e != nil {
+		fail(w, e)
+		return
+	}
+	var in struct {
+		Content string              `json:"content"`
+		History []ai.HistoryMessage `json:"history"`
+	}
+	if e = response.Decode(w, r, &in, 2<<20); e != nil {
+		fail(w, e)
+		return
+	}
+	in.Content = strings.TrimSpace(in.Content)
+	if in.Content == "" || len(in.Content) > 20000 || len(in.History) > 20 {
+		fail(w, response.E(422, "VALIDATION_ERROR", "Content or public history is invalid"))
+		return
+	}
+	for i := range in.History {
+		in.History[i].Content = strings.TrimSpace(in.History[i].Content)
+		if (in.History[i].Role != "user" && in.History[i].Role != "assistant") || in.History[i].Content == "" || len(in.History[i].Content) > 20000 {
+			fail(w, response.E(422, "VALIDATION_ERROR", "Public history contains an invalid message"))
+			return
+		}
+	}
+	events, e := a.engine.GeneratePublic(r.Context(), publication.OrganizationID, publication.AssistantID, in.Content, in.History)
+	if e != nil {
+		fail(w, e)
+		return
+	}
+	streamEvents(w, events)
+}
 func (a *App) assistantUser(w http.ResponseWriter, r *http.Request, grant bool) {
 	id, e := idParam(r, "id")
 	if e != nil {
@@ -747,6 +883,10 @@ func (a *App) sendMessage(w http.ResponseWriter, r *http.Request) {
 		fail(w, e)
 		return
 	}
+	streamEvents(w, events)
+}
+
+func streamEvents(w http.ResponseWriter, events <-chan ai.StreamEvent) {
 	fl, okf := w.(http.Flusher)
 	if !okf {
 		fail(w, response.E(500, "STREAMING_UNSUPPORTED", "Streaming is unavailable"))
@@ -852,6 +992,66 @@ func (a *App) deleteFeedback(w http.ResponseWriter, r *http.Request) {
 	id, e := idParam(r, "id")
 	if e == nil {
 		e = a.feedback.Delete(r.Context(), actor(r), id)
+	}
+	if e != nil {
+		fail(w, e)
+		return
+	}
+	w.WriteHeader(204)
+}
+func (a *App) listTrainingEntries(w http.ResponseWriter, r *http.Request) {
+	p, l := page(r)
+	aid, e := optionalUUID(r.URL.Query().Get("assistant_id"))
+	if e != nil {
+		fail(w, e)
+		return
+	}
+	x, n, e := a.training.List(r.Context(), actor(r), p, l, aid, r.URL.Query().Get("status"), r.URL.Query().Get("scope"))
+	if e != nil {
+		fail(w, e)
+		return
+	}
+	response.JSON(w, 200, x, map[string]any{"page": p, "limit": l, "total": n})
+}
+func (a *App) getTrainingEntry(w http.ResponseWriter, r *http.Request) {
+	id, e := idParam(r, "id")
+	if e != nil {
+		fail(w, e)
+		return
+	}
+	x, e := a.training.Get(r.Context(), actor(r), id)
+	if e != nil {
+		fail(w, e)
+		return
+	}
+	ok(w, x)
+}
+func (a *App) reviewTrainingEntry(w http.ResponseWriter, r *http.Request) {
+	id, e := idParam(r, "id")
+	if e != nil {
+		fail(w, e)
+		return
+	}
+	var in struct {
+		Status  string  `json:"status"`
+		Scope   string  `json:"scope"`
+		Content *string `json:"content"`
+	}
+	if e = response.Decode(w, r, &in, 2<<20); e != nil {
+		fail(w, e)
+		return
+	}
+	x, e := a.training.Review(r.Context(), actor(r), id, in.Status, in.Scope, in.Content)
+	if e != nil {
+		fail(w, e)
+		return
+	}
+	ok(w, x)
+}
+func (a *App) deleteTrainingEntry(w http.ResponseWriter, r *http.Request) {
+	id, e := idParam(r, "id")
+	if e == nil {
+		e = a.training.Delete(r.Context(), actor(r), id)
 	}
 	if e != nil {
 		fail(w, e)

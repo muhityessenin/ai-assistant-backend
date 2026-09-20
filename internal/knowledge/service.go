@@ -283,30 +283,21 @@ func NewProcessor(db *pgxpool.Pool, st storage.Storage, p providers.Provider, c 
 	return &Processor{db: db, storage: st, provider: p, parsers: []DocumentParser{PDFParser{}, DOCXParser{}, TextParser{}}, chunker: c, jobs: make(chan uuid.UUID, workers*32), workers: workers, log: log, ctx: ctx, cancel: cancel}
 }
 func (p *Processor) Start(ctx context.Context) error {
-	_, err := p.db.Exec(ctx, `UPDATE documents SET status='uploaded',error_message=NULL,updated_at=now() WHERE status='processing'`)
+	// Reclaim only stale leases. Resetting every processing row would allow two
+	// application instances to index the same document concurrently.
+	_, err := p.db.Exec(ctx, `UPDATE documents SET status='uploaded',error_message='Recovered after an interrupted processing lease',updated_at=now() WHERE status='processing' AND updated_at < now()-interval '15 minutes'`)
 	if err != nil {
 		return err
 	}
-	rows, err := p.db.Query(ctx, `SELECT id FROM documents WHERE status='uploaded' ORDER BY created_at`)
-	if err != nil {
-		return err
-	}
-	var ids []uuid.UUID
-	for rows.Next() {
-		var id uuid.UUID
-		if err = rows.Scan(&id); err != nil {
-			rows.Close()
-			return err
-		}
-		ids = append(ids, id)
-	}
-	rows.Close()
 	for i := 0; i < p.workers; i++ {
 		p.wg.Add(1)
 		go p.worker()
 	}
-	for _, id := range ids {
-		p.Enqueue(id)
+	p.wg.Add(1)
+	go p.poller()
+	if err = p.enqueuePending(ctx); err != nil {
+		p.Stop()
+		return err
 	}
 	return nil
 }
@@ -323,6 +314,45 @@ func (p *Processor) Enqueue(id uuid.UUID) {
 	}
 }
 func (p *Processor) Stop() { p.cancel(); p.wg.Wait() }
+func (p *Processor) poller() {
+	defer p.wg.Done()
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-p.ctx.Done():
+			return
+		case <-ticker.C:
+			if _, err := p.db.Exec(p.ctx, `UPDATE documents SET status='uploaded',error_message='Recovered after an interrupted processing lease',updated_at=now() WHERE status='processing' AND updated_at < now()-interval '15 minutes'`); err != nil && !errors.Is(err, context.Canceled) {
+				p.log.Error("document lease recovery failed", "error", err)
+			}
+			if err := p.enqueuePending(p.ctx); err != nil && !errors.Is(err, context.Canceled) {
+				p.log.Error("document queue polling failed", "error", err)
+			}
+		}
+	}
+}
+func (p *Processor) enqueuePending(ctx context.Context) error {
+	rows, err := p.db.Query(ctx, `SELECT id FROM documents WHERE status='uploaded' ORDER BY created_at LIMIT $1`, cap(p.jobs))
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id uuid.UUID
+		if err = rows.Scan(&id); err != nil {
+			return err
+		}
+		select {
+		case p.jobs <- id:
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+			return nil
+		}
+	}
+	return rows.Err()
+}
 func (p *Processor) worker() {
 	defer p.wg.Done()
 	for {

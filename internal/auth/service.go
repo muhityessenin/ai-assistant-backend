@@ -46,7 +46,7 @@ func New(db *pgxpool.Pool, secret string, a, r time.Duration, public bool) *Serv
 func (s *Service) Authenticate(ctx context.Context, email, password string) (Actor, Tokens, error) {
 	var a Actor
 	var hash, status string
-	err := s.db.QueryRow(ctx, `SELECT u.id,u.email,u.name,u.password_hash,u.status,ou.organization_id,ou.role FROM users u JOIN organization_users ou ON ou.user_id=u.id JOIN organizations o ON o.id=ou.organization_id WHERE lower(u.email)=lower($1) AND o.status='active' ORDER BY ou.created_at LIMIT 1`, strings.TrimSpace(email)).Scan(&a.UserID, &a.Email, &a.Name, &hash, &status, &a.OrganizationID, &a.Role)
+	err := s.db.QueryRow(ctx, `SELECT u.id,u.email,u.name,u.password_hash,u.status,ou.organization_id,ou.role,ou.can_train FROM users u JOIN organization_users ou ON ou.user_id=u.id JOIN organizations o ON o.id=ou.organization_id WHERE lower(u.email)=lower($1) AND o.status='active' ORDER BY ou.created_at LIMIT 1`, strings.TrimSpace(email)).Scan(&a.UserID, &a.Email, &a.Name, &hash, &status, &a.OrganizationID, &a.Role, &a.CanTrain)
 	if err != nil || status != "active" || !verifyPassword(hash, password) {
 		return a, Tokens{}, response.ErrUnauthorized
 	}
@@ -65,7 +65,7 @@ func (s *Service) Register(ctx context.Context, org, name, email, password strin
 		return Actor{}, Tokens{}, err
 	}
 	defer tx.Rollback(ctx)
-	a := Actor{UserID: uuid.New(), OrganizationID: uuid.New(), Email: strings.ToLower(strings.TrimSpace(email)), Name: strings.TrimSpace(name), Role: "owner"}
+	a := Actor{UserID: uuid.New(), OrganizationID: uuid.New(), Email: strings.ToLower(strings.TrimSpace(email)), Name: strings.TrimSpace(name), Role: "owner", CanTrain: true}
 	slug := slugify(org) + "-" + a.OrganizationID.String()[:8]
 	if _, err = tx.Exec(ctx, `INSERT INTO organizations(id,name,slug) VALUES($1,$2,$3)`, a.OrganizationID, strings.TrimSpace(org), slug); err != nil {
 		return a, Tokens{}, conflict(err)
@@ -134,7 +134,7 @@ func (s *Service) Logout(ctx context.Context, raw string) error {
 	return err
 }
 func (s *Service) LoadActor(ctx context.Context, a Actor) (Actor, error) {
-	err := s.db.QueryRow(ctx, `SELECT u.email,u.name,ou.role FROM users u JOIN organization_users ou ON ou.user_id=u.id WHERE u.id=$1 AND ou.organization_id=$2 AND u.status='active'`, a.UserID, a.OrganizationID).Scan(&a.Email, &a.Name, &a.Role)
+	err := s.db.QueryRow(ctx, `SELECT u.email,u.name,ou.role,ou.can_train FROM users u JOIN organization_users ou ON ou.user_id=u.id WHERE u.id=$1 AND ou.organization_id=$2 AND u.status='active'`, a.UserID, a.OrganizationID).Scan(&a.Email, &a.Name, &a.Role, &a.CanTrain)
 	if err != nil {
 		return Actor{}, response.ErrUnauthorized
 	}

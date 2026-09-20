@@ -157,6 +157,12 @@ func NewLimiter(max int, window time.Duration) *Limiter {
 func (l *Limiter) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		host, _, _ := net.SplitHostPort(r.RemoteAddr)
+		remoteIP := net.ParseIP(host)
+		if remoteIP != nil && (remoteIP.IsLoopback() || remoteIP.IsPrivate()) {
+			if forwarded := strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-For"), ",")[0]); net.ParseIP(forwarded) != nil {
+				host = forwarded
+			}
+		}
 		if a, ok := Actor(r.Context()); ok {
 			host = a.UserID.String()
 		}

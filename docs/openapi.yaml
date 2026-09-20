@@ -19,6 +19,8 @@ paths:
   /auth/logout: {post: {security: [], summary: Revoke refresh token, responses: {'204': {description: Logged out}}}}
   /me: {get: {summary: Current user, responses: {'200': {description: Current user}}}}
   /audio/transcriptions: {post: {summary: Transcribe an authenticated multipart audio file, responses: {'200': {description: Transcribed text}, '422': {description: Invalid audio}, '502': {description: Provider transcription failed}}}}
+  /public/assistants/{publicationID}: {get: {security: [], summary: Public assistant metadata, responses: {'200': {description: Public assistant}}}}
+  /public/assistants/{publicationID}/messages: {post: {security: [], summary: Stateless public assistant chat with bounded client history and SSE response, responses: {'200': {description: text/event-stream}}}}
   /users: {get: {summary: List users, responses: {'200': {description: Page}}}, post: {summary: Create user, responses: {'201': {description: Created}}}}
   /users/{id}:
     parameters: [{name: id, in: path, required: true, schema: {type: string, format: uuid}}]
@@ -32,12 +34,17 @@ paths:
     patch: {summary: Update assistant, responses: {'200': {description: Assistant}}}
     delete: {summary: Archive assistant, responses: {'204': {description: Archived}}}
   /assistants/{id}/conversations: {post: {summary: Create work or train conversation, responses: {'201': {description: Created}}}}
+  /assistants/{id}/knowledge-bases: {get: {summary: List knowledge bases attached to an assistant, responses: {'200': {description: Attached knowledge bases}}}}
+  /assistants/{id}/knowledge-bases/{kbID}: {post: {summary: Attach a knowledge base, responses: {'204': {description: Attached}}}, delete: {summary: Detach a knowledge base, responses: {'204': {description: Detached}}}}
+  /assistants/{id}/publication: {get: {summary: Get public channel, responses: {'200': {description: Publication}}}, post: {summary: Publish or re-enable public assistant channel, responses: {'201': {description: Publication}}}, delete: {summary: Disable public assistant channel, responses: {'204': {description: Disabled}}}}
   /knowledge-bases: {get: {summary: List knowledge bases, responses: {'200': {description: Page}}}, post: {summary: Create knowledge base, responses: {'201': {description: Created}}}}
   /knowledge-bases/{id}/documents: {get: {summary: List documents, responses: {'200': {description: Page}}}, post: {summary: Upload document multipart file, responses: {'202': {description: Queued}}}}
   /knowledge-bases/{id}/texts: {post: {summary: Queue text training, responses: {'202': {description: Queued}}}}
   /conversations: {get: {summary: List conversations, responses: {'200': {description: Page}}}}
   /conversations/{id}: {get: {summary: Get conversation and messages including current-user feedback state, responses: {'200': {description: Conversation}}}, patch: {summary: Update title and/or work/train mode, responses: {'200': {description: Conversation}}}, delete: {summary: Delete, responses: {'204': {description: Deleted}}}}
-  /conversations/{id}/messages: {post: {summary: Send message as SSE stream; train-mode user messages become persistent assistant memory, responses: {'200': {description: text/event-stream}}}}
+  /conversations/{id}/messages: {post: {summary: Send message as SSE stream; train-mode messages create governed memory candidates, responses: {'200': {description: text/event-stream}}}}
   /messages/{id}/feedback: {post: {summary: Submit rating and correction, responses: {'201': {description: Feedback}}}}
   /feedback: {get: {summary: Admin feedback list including conversation title and rated message content, responses: {'200': {description: Page}}}}
+  /training-entries: {get: {summary: Admin list of governed training memory with source chat context, responses: {'200': {description: Page}}}}
+  /training-entries/{id}: {get: {summary: Get training memory, responses: {'200': {description: Training memory}}}, patch: {summary: Review edit approve or reject training memory, responses: {'200': {description: Updated training memory}}}, delete: {summary: Delete training memory, responses: {'204': {description: Deleted}}}}
   /admin/stats: {get: {summary: Organization statistics, responses: {'200': {description: Statistics}}}}

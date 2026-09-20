@@ -97,9 +97,12 @@ in production unless self-service organization creation is intended.
 3. Create an assistant configuration, attach knowledge, and grant users access (or
    enable availability for all users).
 4. Create a conversation and post a message. A conversation has a persistent
-   `mode`: `work` for normal answers or `train` for teaching through chat. In train
-   mode each user message is embedded as tenant- and assistant-isolated memory;
-   relevant memories are retrieved in future work and train chats. Change the mode
+   `mode`: `work` for normal answers or `train` for teaching through chat. Train
+   mode requires an explicit trainer permission. Employee lessons become pending
+   memory candidates; an administrator can edit, approve, reject, scope, or delete
+   them with `/api/v1/training-entries`. Owner/admin lessons are approved
+   immediately. Only approved, tenant- and assistant-isolated memory is retrieved.
+   Change the mode
    with `PATCH /api/v1/conversations/{id}` and `{\"mode\":\"train\"}`. This is
    application-level RAG memory, not provider model-weight fine-tuning. SSE emits
    `message_start`, `sources`, `content_delta`, and `message_complete`.
@@ -108,6 +111,10 @@ in production unless self-service organization creation is intended.
    which the user can review before sending as a normal work or train message.
 5. Submit feedback. Approved corrections are embedded and retrieved for similar
    future questions.
+6. An administrator can publish an assistant from its publication settings. The
+   public channel is revocable and exposes only name, description, and a rate-limited
+   stateless SSE chat. It cannot train the assistant, read private memory, inspect
+   system prompts, or access authenticated organization APIs.
 
 Client disconnect cancels the provider context. A final assistant message is saved
 only after a complete stream; the user message is durable before the network call.
@@ -122,8 +129,9 @@ No database transaction spans an LLM request.
   separate general/chat rate limits.
 - JSON logs include request, user and organization IDs, status and duration. LLM
   logs include model, latency and token use. Secrets are not logged.
-- Rate limits and the job queue are deliberately in-process MVP components. Durable
-  document status makes restarts safe. Replace them before horizontal scaling.
+- Rate limits remain process-local and should move to Redis before horizontal
+  scaling. Document status is durable: workers poll PostgreSQL for uploaded jobs,
+  atomically claim them, and recover stale processing leases after interruption.
 
 Volumes `ai-platform-postgres-data` and `ai-platform-uploads` survive
 `docker compose down`. Do not use `docker compose down -v` in production.

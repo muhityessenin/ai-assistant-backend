@@ -75,6 +75,11 @@ func (a Assistant) ParsedSettings() Settings {
 	}
 	return s
 }
+func (a Assistant) Redacted() Assistant {
+	a.SystemPrompt = ""
+	a.Settings = json.RawMessage(`{}`)
+	return a
+}
 
 type CreateInput struct {
 	Name, Slug, Description, SystemPrompt, Provider, Model string
@@ -95,6 +100,17 @@ type Service struct {
 	defaultProvider, defaultModel string
 }
 
+type Publication struct {
+	ID             uuid.UUID `json:"id"`
+	OrganizationID uuid.UUID `json:"-"`
+	AssistantID    uuid.UUID `json:"assistant_id"`
+	AssistantName  string    `json:"assistant_name"`
+	Description    string    `json:"description"`
+	Enabled        bool      `json:"enabled"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
+}
+
 func NewService(db *pgxpool.Pool, p, m string) *Service {
 	return &Service{db: db, defaultProvider: p, defaultModel: m}
 }
@@ -110,6 +126,9 @@ func (s *Service) Create(ctx context.Context, a auth.Actor, in CreateInput) (Ass
 	}
 	if in.Provider == "" {
 		in.Provider = s.defaultProvider
+	}
+	if in.Provider != s.defaultProvider {
+		return Assistant{}, response.E(422, "UNSUPPORTED_PROVIDER", "AI provider is not configured on this backend")
 	}
 	if in.Model == "" {
 		in.Model = s.defaultModel
@@ -162,6 +181,12 @@ func (s *Service) Update(ctx context.Context, a auth.Actor, id uuid.UUID, in Upd
 	if in.Temperature != nil && (*in.Temperature < 0 || *in.Temperature > 2) {
 		return Assistant{}, response.E(422, "VALIDATION_ERROR", "temperature must be between 0 and 2")
 	}
+	if in.Provider != nil && *in.Provider != s.defaultProvider {
+		return Assistant{}, response.E(422, "UNSUPPORTED_PROVIDER", "AI provider is not configured on this backend")
+	}
+	if in.Model != nil && strings.TrimSpace(*in.Model) == "" {
+		return Assistant{}, response.E(422, "VALIDATION_ERROR", "model cannot be empty")
+	}
 	if len(in.Settings) > 0 && !json.Valid(in.Settings) {
 		return Assistant{}, response.E(422, "VALIDATION_ERROR", "settings must be JSON")
 	}
@@ -204,6 +229,68 @@ func (s *Service) AttachKB(ctx context.Context, a auth.Actor, assistantID, kbID 
 		return response.ErrNotFound
 	}
 	return nil
+}
+func (s *Service) ListKBs(ctx context.Context, a auth.Actor, assistantID uuid.UUID) ([]map[string]any, error) {
+	if !a.IsAdmin() {
+		return nil, response.ErrForbidden
+	}
+	rows, err := s.db.Query(ctx, `SELECT kb.id,kb.name,kb.description,kb.status,kb.created_at,kb.updated_at FROM assistant_knowledge_bases akb JOIN assistants ast ON ast.organization_id=akb.organization_id AND ast.id=akb.assistant_id JOIN knowledge_bases kb ON kb.organization_id=akb.organization_id AND kb.id=akb.knowledge_base_id WHERE akb.organization_id=$1 AND akb.assistant_id=$2 AND ast.status='active' AND kb.status='active' ORDER BY kb.name`, a.OrganizationID, assistantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]map[string]any, 0)
+	for rows.Next() {
+		var id uuid.UUID
+		var name, status string
+		var description *string
+		var createdAt, updatedAt time.Time
+		if err = rows.Scan(&id, &name, &description, &status, &createdAt, &updatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, map[string]any{"id": id, "name": name, "description": description, "status": status, "created_at": createdAt, "updated_at": updatedAt})
+	}
+	return out, rows.Err()
+}
+func (s *Service) Publish(ctx context.Context, a auth.Actor, assistantID uuid.UUID) (Publication, error) {
+	if !a.IsAdmin() {
+		return Publication{}, response.ErrForbidden
+	}
+	var x Publication
+	err := s.db.QueryRow(ctx, `INSERT INTO assistant_publications(organization_id,assistant_id,created_by) SELECT $1,$2,$3 WHERE EXISTS(SELECT 1 FROM assistants WHERE organization_id=$1 AND id=$2 AND status='active') ON CONFLICT(organization_id,assistant_id) DO UPDATE SET enabled=true,updated_at=now() RETURNING id,organization_id,assistant_id,enabled,created_at,updated_at`, a.OrganizationID, assistantID, a.UserID).Scan(&x.ID, &x.OrganizationID, &x.AssistantID, &x.Enabled, &x.CreatedAt, &x.UpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Publication{}, response.ErrNotFound
+	}
+	return x, err
+}
+func (s *Service) GetPublication(ctx context.Context, id uuid.UUID) (Publication, error) {
+	var x Publication
+	err := s.db.QueryRow(ctx, `SELECT ap.id,ap.organization_id,ap.assistant_id,a.name,a.description,ap.enabled,ap.created_at,ap.updated_at FROM assistant_publications ap JOIN assistants a ON a.organization_id=ap.organization_id AND a.id=ap.assistant_id WHERE ap.id=$1 AND ap.enabled AND a.status='active'`, id).Scan(&x.ID, &x.OrganizationID, &x.AssistantID, &x.AssistantName, &x.Description, &x.Enabled, &x.CreatedAt, &x.UpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Publication{}, response.ErrNotFound
+	}
+	return x, err
+}
+func (s *Service) GetAssistantPublication(ctx context.Context, a auth.Actor, assistantID uuid.UUID) (Publication, error) {
+	if !a.IsAdmin() {
+		return Publication{}, response.ErrForbidden
+	}
+	var x Publication
+	err := s.db.QueryRow(ctx, `SELECT ap.id,ap.organization_id,ap.assistant_id,ast.name,ast.description,ap.enabled,ap.created_at,ap.updated_at FROM assistant_publications ap JOIN assistants ast ON ast.organization_id=ap.organization_id AND ast.id=ap.assistant_id WHERE ap.organization_id=$1 AND ap.assistant_id=$2`, a.OrganizationID, assistantID).Scan(&x.ID, &x.OrganizationID, &x.AssistantID, &x.AssistantName, &x.Description, &x.Enabled, &x.CreatedAt, &x.UpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Publication{}, response.ErrNotFound
+	}
+	return x, err
+}
+func (s *Service) Unpublish(ctx context.Context, a auth.Actor, assistantID uuid.UUID) error {
+	if !a.IsAdmin() {
+		return response.ErrForbidden
+	}
+	tag, err := s.db.Exec(ctx, `UPDATE assistant_publications SET enabled=false,updated_at=now() WHERE organization_id=$1 AND assistant_id=$2 AND enabled`, a.OrganizationID, assistantID)
+	if err == nil && tag.RowsAffected() == 0 {
+		return response.ErrNotFound
+	}
+	return err
 }
 func (s *Service) SetUserAccess(ctx context.Context, a auth.Actor, assistantID, userID uuid.UUID, grant bool) error {
 	if !a.IsAdmin() {

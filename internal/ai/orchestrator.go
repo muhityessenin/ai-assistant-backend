@@ -59,14 +59,17 @@ func (e *Engine) Generate(ctx context.Context, req GenerateRequest) (<-chan Stre
 	if err != nil {
 		return nil, err
 	}
+	if mode == "train" && !req.Actor.CanTrainAssistant() {
+		return nil, response.E(403, "TRAINING_FORBIDDEN", "You do not have permission to train assistants")
+	}
 	asst, err := e.assistants.Get(ctx, req.Actor, assistantID)
 	if err != nil {
 		return nil, err
 	}
 	settings := asst.ParsedSettings()
-	var learnedID uuid.UUID
+	var learned training.Entry
 	if mode == "train" {
-		learnedID, err = e.training.Learn(ctx, req.Actor.OrganizationID, assistantID, req.ConversationID, req.UserMessageID, req.Actor.UserID, req.Content)
+		learned, err = e.training.Learn(ctx, req.Actor, assistantID, req.ConversationID, req.UserMessageID, req.Content)
 		if err != nil {
 			return nil, err
 		}
@@ -95,7 +98,7 @@ func (e *Engine) Generate(ctx context.Context, req GenerateRequest) (<-chan Stre
 	}
 	g.Go(func() error {
 		var x error
-		memories, x = e.training.Retrieve(gctx, req.Actor.OrganizationID, assistantID, req.Content, 8, 0.35)
+		memories, x = e.training.Retrieve(gctx, req.Actor.OrganizationID, assistantID, req.Actor.UserID, req.Content, 8, 0.35)
 		return x
 	})
 	if err = g.Wait(); err != nil {
@@ -111,7 +114,53 @@ func (e *Engine) Generate(ctx context.Context, req GenerateRequest) (<-chan Stre
 		return nil, err
 	}
 	out := make(chan StreamEvent)
-	go e.relay(ctx, out, stream, req, asst, chunks, memories, mode, learnedID)
+	go e.relay(ctx, out, stream, req, asst, chunks, memories, mode, learned)
+	return out, nil
+}
+func (e *Engine) GeneratePublic(ctx context.Context, organizationID, assistantID uuid.UUID, content string, history []HistoryMessage) (<-chan StreamEvent, error) {
+	actor := auth.Actor{OrganizationID: organizationID, Role: "owner"}
+	asst, err := e.assistants.Get(ctx, actor, assistantID)
+	if err != nil {
+		return nil, err
+	}
+	settings := asst.ParsedSettings()
+	var chunks []knowledge.KnowledgeChunk
+	var examples []feedback.Example
+	var memories []training.Memory
+	g, gctx := errgroup.WithContext(ctx)
+	if settings.RAG.Enabled {
+		g.Go(func() error {
+			var retrieveErr error
+			chunks, retrieveErr = e.knowledge.Retrieve(gctx, organizationID, assistantID, content, knowledge.RetrieveOptions{TopK: settings.RAG.TopK, MinScore: settings.RAG.MinScore})
+			return retrieveErr
+		})
+	}
+	if settings.Feedback.Enabled {
+		g.Go(func() error {
+			var retrieveErr error
+			examples, retrieveErr = e.feedback.Retrieve(gctx, organizationID, assistantID, content, settings.Feedback.TopK)
+			return retrieveErr
+		})
+	}
+	g.Go(func() error {
+		var retrieveErr error
+		memories, retrieveErr = e.training.Retrieve(gctx, organizationID, assistantID, uuid.Nil, content, 8, 0.35)
+		return retrieveErr
+	})
+	if err = g.Wait(); err != nil {
+		return nil, fmt.Errorf("public context retrieval: %w", err)
+	}
+	provider, err := e.providers.Get(asst.Provider)
+	if err != nil {
+		return nil, err
+	}
+	messages := e.builder.Build(asst, history, chunks, examples, memories, "work", content)
+	stream, err := provider.StreamChat(ctx, providers.ChatRequest{Model: asst.Model, Messages: messages, Temperature: asst.Temperature, MaxTokens: asst.MaxOutputTokens})
+	if err != nil {
+		return nil, err
+	}
+	out := make(chan StreamEvent)
+	go e.relayPublic(ctx, out, stream, asst, chunks)
 	return out, nil
 }
 func (e *Engine) history(ctx context.Context, req GenerateRequest, limit int) ([]HistoryMessage, error) {
@@ -130,7 +179,7 @@ func (e *Engine) history(ctx context.Context, req GenerateRequest, limit int) ([
 	}
 	return out, rows.Err()
 }
-func (e *Engine) relay(ctx context.Context, out chan StreamEvent, in <-chan providers.ChatChunk, req GenerateRequest, a assistant.Assistant, chunks []knowledge.KnowledgeChunk, memories []training.Memory, mode string, learnedID uuid.UUID) {
+func (e *Engine) relay(ctx context.Context, out chan StreamEvent, in <-chan providers.ChatChunk, req GenerateRequest, a assistant.Assistant, chunks []knowledge.KnowledgeChunk, memories []training.Memory, mode string, learned training.Entry) {
 	defer close(out)
 	start := time.Now()
 	id := uuid.New()
@@ -202,8 +251,49 @@ func (e *Engine) relay(ctx context.Context, out chan StreamEvent, in <-chan prov
 	}
 	e.log.Info("llm response", "provider", a.Provider, "model", a.Model, "latency_ms", time.Since(start).Milliseconds(), "input_tokens", usage.InputTokens, "output_tokens", usage.OutputTokens)
 	data := map[string]any{"message_id": id, "usage": usage, "mode": mode}
-	if learnedID != uuid.Nil {
-		data["training_entry_id"] = learnedID
+	if learned.ID != uuid.Nil {
+		data["training_entry_id"] = learned.ID
+		data["training_status"] = learned.Status
 	}
 	send(StreamEvent{Type: "message_complete", Data: data})
+}
+func (e *Engine) relayPublic(ctx context.Context, out chan StreamEvent, in <-chan providers.ChatChunk, a assistant.Assistant, chunks []knowledge.KnowledgeChunk) {
+	defer close(out)
+	start := time.Now()
+	id := uuid.New()
+	send := func(event StreamEvent) bool {
+		select {
+		case out <- event:
+			return true
+		case <-ctx.Done():
+			return false
+		}
+	}
+	if !send(StreamEvent{Type: "message_start", Data: map[string]any{"message_id": id}}) {
+		return
+	}
+	if a.ParsedSettings().Citations && len(chunks) > 0 {
+		sources := make([]map[string]any, len(chunks))
+		for i, chunk := range chunks {
+			sources[i] = chunk.Source()
+		}
+		if !send(StreamEvent{Type: "sources", Data: sources}) {
+			return
+		}
+	}
+	var usage providers.Usage
+	for chunk := range in {
+		if chunk.Err != nil {
+			send(StreamEvent{Type: "error", Data: map[string]string{"code": "PROVIDER_STREAM_ERROR", "message": "AI provider stream failed"}, Err: chunk.Err})
+			return
+		}
+		if chunk.Delta != "" && !send(StreamEvent{Type: "content_delta", Data: map[string]string{"delta": chunk.Delta}}) {
+			return
+		}
+		if chunk.Usage.TotalTokens > 0 {
+			usage = chunk.Usage
+		}
+	}
+	e.log.Info("public llm response", "provider", a.Provider, "model", a.Model, "latency_ms", time.Since(start).Milliseconds(), "input_tokens", usage.InputTokens, "output_tokens", usage.OutputTokens)
+	send(StreamEvent{Type: "message_complete", Data: map[string]any{"message_id": id, "usage": usage, "mode": "work"}})
 }

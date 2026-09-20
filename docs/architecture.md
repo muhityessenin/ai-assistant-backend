@@ -8,9 +8,10 @@ services, services enforce tenant/RBAC invariants, domain repositories wrap type
 database access, and PostgreSQL/pgvector is the single durable store. File parsing
 and embedding run in an in-process, bounded worker pool. LLM and storage are ports.
 
-The MVP deliberately has no broker, cache, search engine, or separate worker. A
-bounded in-memory queue is acceptable because document state is durable and
-`uploaded`/interrupted `processing` documents are recovered at startup.
+The MVP deliberately has no broker, cache, search engine, or separate worker.
+PostgreSQL is the durable document queue: a bounded local channel reduces polling
+latency, periodic database polling recovers missed notifications, atomic status
+transitions claim jobs, and stale processing leases are recovered after crashes.
 
 ## Modules and flow
 
@@ -22,7 +23,7 @@ cmd/api -> app composition/root router
   platform (config, DB, middleware, response, workers)
 
 request -> middleware -> handler -> service -> repository -> pgx/sqlc -> PostgreSQL
-chat -> authorization -> parallel RAG/feedback retrieval -> context builder
+chat -> authorization -> parallel hybrid RAG/feedback/governed-memory retrieval -> context builder
      -> provider stream -> SSE -> durable assistant message
 ```
 
@@ -40,6 +41,7 @@ assistants *--* knowledge_bases (assistant_knowledge_bases)
 knowledge_bases 1--* documents 1--* document_chunks(vector)
 assistants 1--* conversations 1--* messages
 messages 1--0..1 message_feedback 1--0..1 feedback_examples(vector)
+messages 1--0..1 assistant_training_entries(vector, status, scope, version)
 users/assistants/conversations/knowledge all carry organization_id
 refresh_tokens belongs to user + organization and stores only a SHA-256 token hash
 ```
@@ -52,10 +54,12 @@ keys and composite foreign keys where practical. Vector indexes use HNSW/cosine.
 - System: `GET /health`, `/ready`, `/docs`, `/openapi.yaml`.
 - Auth: `POST /api/v1/auth/{register,login,refresh,logout}`, `GET /api/v1/me`.
 - Users: list/create/get/update/deactivate under `/api/v1/users`.
-- Assistants: CRUD, KB attach/detach, user access grant/revoke/list.
+- Assistants: CRUD, KB attach/detach/list, user access grant/revoke/list.
+- Public channels: admin publish/disable plus anonymous, rate-limited stateless chat.
 - Knowledge: KB CRUD; document list/upload/get/delete; text ingestion.
 - Conversations: list/get/rename/delete; create beneath an assistant; SSE messages.
 - Feedback: submit beneath a message; admin list/get/moderate/delete.
+- Training memory: admin list/get/edit/approve/reject/delete with source chat context.
 - Administration: `GET /api/v1/admin/stats`.
 
 Lists use `page`/`limit` (maximum 100), search/filter fields, and stable sort choices.
