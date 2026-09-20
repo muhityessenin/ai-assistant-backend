@@ -152,6 +152,19 @@ Tests cover password/RBAC, assistant-context boundaries, SSE flushing,
 tenant-scoped RAG query invariants, and paragraph-aware chunking. CI should also run
 repository tests against an isolated PostgreSQL/pgvector database.
 
+Run the complete deployed-server smoke test with owner credentials entered at the
+interactive prompt:
+
+```bash
+BASE_URL=https://ai-assistant-api.pp.ua ./test-all-endpoints.sh
+```
+
+For a self-signed certificate and a DNS-independent check through local nginx use
+`INSECURE_TLS=true` and
+`CURL_RESOLVE=ai-assistant-api.pp.ua:443:127.0.0.1`. The script creates uniquely
+named temporary objects and cleans them up on success or failure. It performs real
+embedding and chat requests and therefore requires a working provider API key.
+
 ## Database backup and restore
 
 ```bash

@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-# Sequential smoke test for every AI Assistants Platform endpoint.
-# Requirements: bash, curl, jq; running backend; valid OPENAI_API_KEY for RAG/chat.
+# Sequential destructive-safe smoke test for every AI Assistants Platform endpoint.
+# It creates uniquely named temporary records and removes/deactivates them on exit.
+# Requirements: bash, curl, jq; running backend; valid OPENAI_API_KEY for embeddings/chat.
 
 BASE_URL="${BASE_URL:-http://localhost:18473}"
 API="$BASE_URL/api/v1"
@@ -10,11 +11,42 @@ OWNER_EMAIL="${OWNER_EMAIL:-}"
 OWNER_PASSWORD="${OWNER_PASSWORD:-}"
 TEST_CHAT_MODEL="${TEST_CHAT_MODEL:-gpt-4o-mini}"
 WAIT_ATTEMPTS="${WAIT_ATTEMPTS:-40}"
+INSECURE_TLS="${INSECURE_TLS:-false}"
+CURL_RESOLVE="${CURL_RESOLVE:-}"
+KEEP_TEST_DATA="${KEEP_TEST_DATA:-false}"
 RUN_ID="$(date +%s)-$RANDOM"
 TMP_DIR="$(mktemp -d)"
 
+for command in curl jq; do
+  command -v "$command" >/dev/null || { echo "Missing dependency: $command" >&2; exit 1; }
+done
+
+CURL_TLS_ARGS=()
+if [[ "$INSECURE_TLS" == "true" ]]; then
+  CURL_TLS_ARGS=(-k)
+  echo 'WARNING: TLS certificate verification is disabled for this test run.' >&2
+fi
+[[ -n "$CURL_RESOLVE" ]] && CURL_TLS_ARGS+=(--resolve "$CURL_RESOLVE")
+curl() { command curl "${CURL_TLS_ARGS[@]}" "$@"; }
+
 cleanup() {
   local token
+  set +e
+  if [[ "$KEEP_TEST_DATA" != "true" && -n "${OWNER_ACCESS:-}" ]]; then
+    [[ -n "${FEEDBACK_ID:-}" ]] && curl -sS -o /dev/null -X DELETE -H "Authorization: Bearer $OWNER_ACCESS" "$API/feedback/$FEEDBACK_ID"
+    [[ -n "${TRAINING_ENTRY_ID:-}" ]] && curl -sS -o /dev/null -X DELETE -H "Authorization: Bearer $OWNER_ACCESS" "$API/training-entries/$TRAINING_ENTRY_ID"
+    [[ -n "${CONVERSATION_ID:-}" ]] && curl -sS -o /dev/null -X DELETE -H "Authorization: Bearer $OWNER_ACCESS" "$API/conversations/$CONVERSATION_ID"
+    if [[ -n "${ASSISTANT_ID:-}" ]]; then
+      curl -sS -o /dev/null -X DELETE -H "Authorization: Bearer $OWNER_ACCESS" "$API/assistants/$ASSISTANT_ID/publication"
+      [[ -n "${EMPLOYEE_ID:-}" ]] && curl -sS -o /dev/null -X DELETE -H "Authorization: Bearer $OWNER_ACCESS" "$API/assistants/$ASSISTANT_ID/users/$EMPLOYEE_ID"
+      [[ -n "${KB_ID:-}" ]] && curl -sS -o /dev/null -X DELETE -H "Authorization: Bearer $OWNER_ACCESS" "$API/assistants/$ASSISTANT_ID/knowledge-bases/$KB_ID"
+    fi
+    [[ -n "${UPLOAD_DOCUMENT_ID:-}" ]] && curl -sS -o /dev/null -X DELETE -H "Authorization: Bearer $OWNER_ACCESS" "$API/documents/$UPLOAD_DOCUMENT_ID"
+    [[ -n "${TEXT_DOCUMENT_ID:-}" ]] && curl -sS -o /dev/null -X DELETE -H "Authorization: Bearer $OWNER_ACCESS" "$API/documents/$TEXT_DOCUMENT_ID"
+    [[ -n "${ASSISTANT_ID:-}" ]] && curl -sS -o /dev/null -X DELETE -H "Authorization: Bearer $OWNER_ACCESS" "$API/assistants/$ASSISTANT_ID"
+    [[ -n "${KB_ID:-}" ]] && curl -sS -o /dev/null -X DELETE -H "Authorization: Bearer $OWNER_ACCESS" "$API/knowledge-bases/$KB_ID"
+    [[ -n "${EMPLOYEE_ID:-}" ]] && curl -sS -o /dev/null -X DELETE -H "Authorization: Bearer $OWNER_ACCESS" "$API/users/$EMPLOYEE_ID"
+  fi
   if command -v curl >/dev/null 2>&1; then
     for token in "${EMPLOYEE_REFRESH:-}" "${OWNER_REFRESH:-}"; do
       if [[ -n "$token" ]]; then
@@ -26,10 +58,6 @@ cleanup() {
   rm -rf "$TMP_DIR"
 }
 trap cleanup EXIT
-
-for command in curl jq; do
-  command -v "$command" >/dev/null || { echo "Missing dependency: $command" >&2; exit 1; }
-done
 
 if command -v docker >/dev/null 2>&1 && docker inspect ai-platform-postgres >/dev/null 2>&1; then
   DB_USER="$(docker exec ai-platform-postgres printenv POSTGRES_USER)"
@@ -81,6 +109,10 @@ json_call GET "$BASE_URL/health" 200 "$TMP_DIR/health.json"
 say 'GET /ready'
 json_call GET "$BASE_URL/ready" 200 "$TMP_DIR/ready.json"
 [[ "$(json_value "$TMP_DIR/ready.json" '.data.status')" == ready ]]
+jq -e '.data.migration_version >= 5' "$TMP_DIR/ready.json" >/dev/null || {
+  echo 'Migration version 5 or newer is required for governed training and public channels.' >&2
+  exit 1
+}
 
 say 'GET /docs'
 docs_status="$(curl -sS -o "$TMP_DIR/docs.html" -w '%{http_code}' "$BASE_URL/docs")"
@@ -122,8 +154,9 @@ EMPLOYEE_PASSWORD="Smoke-Test-$RUN_ID!"
 
 say 'POST /users/ — create employee'
 json_call POST "$API/users/" 201 "$TMP_DIR/user-create.json" "$OWNER_ACCESS" \
-  "$(jq -nc --arg n "Smoke Employee $RUN_ID" --arg e "$EMPLOYEE_EMAIL" --arg p "$EMPLOYEE_PASSWORD" '{name:$n,email:$e,password:$p,role:"employee"}')"
+  "$(jq -nc --arg n "Smoke Employee $RUN_ID" --arg e "$EMPLOYEE_EMAIL" --arg p "$EMPLOYEE_PASSWORD" '{name:$n,email:$e,password:$p,role:"employee",can_train:true}')"
 EMPLOYEE_ID="$(json_value "$TMP_DIR/user-create.json" '.data.id')"
+jq -e '.data.role == "employee" and .data.can_train == true' "$TMP_DIR/user-create.json" >/dev/null
 
 say 'GET /users/ — pagination and search'
 json_call GET "$API/users/?page=1&limit=20&search=smoke-$RUN_ID" 200 "$TMP_DIR/users.json" "$OWNER_ACCESS"
@@ -143,6 +176,7 @@ EMPLOYEE_REFRESH="$(json_value "$TMP_DIR/employee-login.json" '.data.tokens.refr
 
 say 'GET /me — employee'
 json_call GET "$API/me" 200 "$TMP_DIR/employee-me.json" "$EMPLOYEE_ACCESS"
+jq -e '.data.role == "employee" and .data.can_train == true' "$TMP_DIR/employee-me.json" >/dev/null
 
 say 'POST /audio/transcriptions without file — expected 422 validation'
 transcription_status="$(curl -sS -o "$TMP_DIR/transcription-validation.json" -w '%{http_code}' -X POST \
@@ -229,6 +263,10 @@ json_call PATCH "$API/assistants/$ASSISTANT_ID" 200 "$TMP_DIR/assistant-update.j
 say 'POST /assistants/{id}/knowledge-bases/{kbID} — attach'
 json_call POST "$API/assistants/$ASSISTANT_ID/knowledge-bases/$KB_ID" 204 "$TMP_DIR/kb-attach.out" "$OWNER_ACCESS"
 
+say 'GET /assistants/{id}/knowledge-bases — verify attached source'
+json_call GET "$API/assistants/$ASSISTANT_ID/knowledge-bases" 200 "$TMP_DIR/assistant-kbs.json" "$OWNER_ACCESS"
+jq -e --arg id "$KB_ID" '.data[] | select(.id == $id)' "$TMP_DIR/assistant-kbs.json" >/dev/null
+
 say 'POST /assistants/{id}/users/{userID} — grant access'
 json_call POST "$API/assistants/$ASSISTANT_ID/users/$EMPLOYEE_ID" 204 "$TMP_DIR/access-grant.out" "$OWNER_ACCESS"
 
@@ -237,6 +275,19 @@ json_call GET "$API/assistants/$ASSISTANT_ID/users" 200 "$TMP_DIR/access-list.js
 
 say 'GET /assistants/{id} as employee — access must work'
 json_call GET "$API/assistants/$ASSISTANT_ID" 200 "$TMP_DIR/employee-assistant.json" "$EMPLOYEE_ACCESS"
+jq -e '.data.system_prompt == "" and .data.settings == {}' "$TMP_DIR/employee-assistant.json" >/dev/null
+
+say 'PATCH /users/{id} — revoke trainer permission'
+json_call PATCH "$API/users/$EMPLOYEE_ID" 200 "$TMP_DIR/trainer-revoke.json" "$OWNER_ACCESS" '{"can_train":false}'
+jq -e '.data.can_train == false' "$TMP_DIR/trainer-revoke.json" >/dev/null
+
+say 'POST train conversation without trainer permission — expected 403'
+json_call POST "$API/assistants/$ASSISTANT_ID/conversations" 403 "$TMP_DIR/train-forbidden.json" "$EMPLOYEE_ACCESS" \
+  '{"title":"Must not be created","mode":"train"}'
+
+say 'PATCH /users/{id} — restore trainer permission'
+json_call PATCH "$API/users/$EMPLOYEE_ID" 200 "$TMP_DIR/trainer-restore.json" "$OWNER_ACCESS" '{"can_train":true}'
+jq -e '.data.can_train == true' "$TMP_DIR/trainer-restore.json" >/dev/null
 
 say 'POST /assistants/{id}/conversations — employee creates conversation'
 json_call POST "$API/assistants/$ASSISTANT_ID/conversations" 201 "$TMP_DIR/conversation-create.json" "$EMPLOYEE_ACCESS" \
@@ -265,12 +316,43 @@ curl --fail-with-body -sS -N -X POST \
   "$API/conversations/$CONVERSATION_ID/messages" | tee "$TMP_DIR/train-chat.sse"
 grep -q '^event: message_complete' "$TMP_DIR/train-chat.sse"
 TRAIN_COMPLETE_JSON="$(awk '/^event: message_complete/{getline; sub(/^data: /, ""); print; exit}' "$TMP_DIR/train-chat.sse")"
-jq -e '.mode == "train" and (.training_entry_id | type == "string")' <<<"$TRAIN_COMPLETE_JSON" >/dev/null
+jq -e '.mode == "train" and .training_status == "pending" and (.training_entry_id | type == "string")' <<<"$TRAIN_COMPLETE_JSON" >/dev/null
+TRAINING_ENTRY_ID="$(jq -er '.training_entry_id' <<<"$TRAIN_COMPLETE_JSON")"
+
+say 'GET /training-entries/ — pending candidate with source context'
+json_call GET "$API/training-entries/?page=1&limit=20&assistant_id=$ASSISTANT_ID&status=pending&scope=organization" 200 "$TMP_DIR/training-list.json" "$OWNER_ACCESS"
+jq -e --arg id "$TRAINING_ENTRY_ID" --arg conversation "$CONVERSATION_ID" \
+  '.data[] | select(.id==$id and .conversation_id==$conversation and .conversation_title != "" and .source_message_id != "")' \
+  "$TMP_DIR/training-list.json" >/dev/null
+
+say 'GET /training-entries/ as employee — expected 403'
+json_call GET "$API/training-entries/" 403 "$TMP_DIR/training-forbidden.json" "$EMPLOYEE_ACCESS"
+
+say 'GET /training-entries/{id}'
+json_call GET "$API/training-entries/$TRAINING_ENTRY_ID" 200 "$TMP_DIR/training-get.json" "$OWNER_ACCESS"
+jq -e '.data.status == "pending" and .data.version == 1' "$TMP_DIR/training-get.json" >/dev/null
+
+say 'PATCH /training-entries/{id} — review and publish canonical memory'
+json_call PATCH "$API/training-entries/$TRAINING_ENTRY_ID" 200 "$TMP_DIR/training-approve.json" "$OWNER_ACCESS" \
+  '{"status":"approved","scope":"organization","content":"The internal phrase Blue Lantern means that explicit board approval is required."}'
+jq -e '.data.status == "approved" and .data.scope == "organization" and .data.version == 2 and .data.reviewed_at != null' "$TMP_DIR/training-approve.json" >/dev/null
 
 say 'PATCH /conversations/{id} — return to work mode'
 json_call PATCH "$API/conversations/$CONVERSATION_ID" 200 "$TMP_DIR/conversation-work-mode.json" "$EMPLOYEE_ACCESS" \
   '{"mode":"work"}'
 jq -e '.data.mode == "work"' "$TMP_DIR/conversation-work-mode.json" >/dev/null
+
+say 'POST /conversations/{id}/messages — approved training memory retrieval'
+curl --fail-with-body -sS -N -X POST \
+  -H "Authorization: Bearer $EMPLOYEE_ACCESS" -H 'Content-Type: application/json' \
+  --data '{"content":"What does the internal phrase Blue Lantern mean?"}' \
+  "$API/conversations/$CONVERSATION_ID/messages" | tee "$TMP_DIR/memory-chat.sse"
+grep -q '^event: message_complete' "$TMP_DIR/memory-chat.sse"
+MEMORY_ANSWER="$(awk '/^event: content_delta/{getline; sub(/^data: /, ""); print}' "$TMP_DIR/memory-chat.sse" | jq -rs 'map(.delta) | join("")')"
+grep -Eiq 'board|approval|совет|одобрен' <<<"$MEMORY_ANSWER" || {
+  echo "Approved memory was not reflected in the answer: $MEMORY_ANSWER" >&2
+  exit 1
+}
 
 say 'POST /conversations/{id}/messages — SSE chat/RAG/sources'
 curl --fail-with-body -sS -N -X POST \
@@ -283,6 +365,33 @@ grep -q '^event: sources' "$TMP_DIR/chat.sse"
 grep -q '^event: message_complete' "$TMP_DIR/chat.sse"
 MESSAGE_JSON="$(awk '/^event: message_complete/{getline; sub(/^data: /, ""); print; exit}' "$TMP_DIR/chat.sse")"
 MESSAGE_ID="$(jq -er '.message_id' <<<"$MESSAGE_JSON")"
+
+say 'POST /assistants/{id}/publication — enable public channel'
+json_call POST "$API/assistants/$ASSISTANT_ID/publication" 201 "$TMP_DIR/publication-create.json" "$OWNER_ACCESS"
+PUBLICATION_ID="$(json_value "$TMP_DIR/publication-create.json" '.data.id')"
+jq -e '.data.enabled == true' "$TMP_DIR/publication-create.json" >/dev/null
+
+say 'GET /assistants/{id}/publication — admin publication status'
+json_call GET "$API/assistants/$ASSISTANT_ID/publication" 200 "$TMP_DIR/publication-get.json" "$OWNER_ACCESS"
+jq -e --arg id "$PUBLICATION_ID" '.data.id == $id and .data.enabled == true' "$TMP_DIR/publication-get.json" >/dev/null
+
+say 'GET /public/assistants/{publicationID} — anonymous metadata'
+json_call GET "$API/public/assistants/$PUBLICATION_ID" 200 "$TMP_DIR/public-assistant.json"
+jq -e '.data.assistant_name == "Smoke CFO" and (.data | has("system_prompt") | not)' "$TMP_DIR/public-assistant.json" >/dev/null
+
+say 'POST /public/assistants/{publicationID}/messages — anonymous SSE chat'
+curl --fail-with-body -sS -N -X POST -H 'Content-Type: application/json' \
+  --data '{"content":"What does Blue Lantern mean?","history":[]}' \
+  "$API/public/assistants/$PUBLICATION_ID/messages" | tee "$TMP_DIR/public-chat.sse"
+grep -q '^event: message_start' "$TMP_DIR/public-chat.sse"
+grep -q '^event: content_delta' "$TMP_DIR/public-chat.sse"
+grep -q '^event: message_complete' "$TMP_DIR/public-chat.sse"
+
+say 'DELETE /assistants/{id}/publication — disable public channel'
+json_call DELETE "$API/assistants/$ASSISTANT_ID/publication" 204 "$TMP_DIR/publication-delete.out" "$OWNER_ACCESS"
+
+say 'GET disabled public channel — expected 404'
+json_call GET "$API/public/assistants/$PUBLICATION_ID" 404 "$TMP_DIR/public-disabled.json"
 
 say 'GET /conversations/{id} — persisted assistant message and metadata'
 json_call GET "$API/conversations/$CONVERSATION_ID" 200 "$TMP_DIR/conversation-after-chat.json" "$EMPLOYEE_ACCESS"
@@ -323,6 +432,9 @@ json_call PATCH "$API/feedback/$FEEDBACK_ID" 200 "$TMP_DIR/feedback-reject.json"
 
 say 'DELETE /feedback/{id}'
 json_call DELETE "$API/feedback/$FEEDBACK_ID" 204 "$TMP_DIR/feedback-delete.out" "$OWNER_ACCESS"
+
+say 'DELETE /training-entries/{id}'
+json_call DELETE "$API/training-entries/$TRAINING_ENTRY_ID" 204 "$TMP_DIR/training-delete.out" "$OWNER_ACCESS"
 
 say 'DELETE /conversations/{id}'
 json_call DELETE "$API/conversations/$CONVERSATION_ID" 204 "$TMP_DIR/conversation-delete.out" "$EMPLOYEE_ACCESS"
